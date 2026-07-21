@@ -10,6 +10,15 @@ export interface AuthContextValue {
   signInWithPassword: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  /**
+   * Applies a local, optimistic patch to the in-memory profile (e.g. flipping
+   * `is_online` the instant a toggle is tapped) without waiting for the RPC
+   * round trip. Callers are responsible for reconciling with
+   * `refreshProfile()` once the underlying write settles — this is purely a
+   * UI-responsiveness aid, never a security boundary (RLS/RPCs still enforce
+   * the real write).
+   */
+  patchProfile: (patch: Partial<Profile>) => void;
 }
 
 export const AuthContext = createContext<AuthContextValue | undefined>(undefined);

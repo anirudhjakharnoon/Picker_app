@@ -129,6 +129,31 @@ For testing without printed QR codes, use each scanner screen's "Can't scan?
 Enter code manually" fallback and type the `code_value` shown in the
 `qr_codes` table.
 
+### Automated checks
+
+```bash
+npm run lint      # oxlint
+npm run test      # vitest unit tests
+npm run build     # tsc -b && vite build
+```
+
+There's also a browser-level smoke test (`npm run test:e2e`) that renders the
+Picker/Admin screens against a mocked Supabase backend using the system
+Chrome — no real project credentials needed. It has caught real interaction
+bugs that a build/lint/unit-test pass alone would not (a fixed bottom bar
+covering a button on short screens, an invisible close icon, a stale DOM
+event reference after an `await`). Run a dev server first, then:
+
+```bash
+npm run dev -- --port 5175 --host 127.0.0.1   # in one terminal
+CHROME_PATH=/usr/local/bin/google-chrome npm run test:e2e   # in another
+```
+
+`CHROME_PATH` defaults to `/usr/local/bin/google-chrome`; point it at any
+Chrome/Chromium binary you have installed. This script isn't wired into CI —
+it's a manual regression aid for anyone touching Picker/Admin interaction
+logic.
+
 ## 7. Build & deploy
 
 ```bash

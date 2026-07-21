@@ -1,11 +1,12 @@
 import { useEffect, type ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthProvider';
 import { useAuth } from './auth/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { PickerPage } from './pages/PickerPage';
 import { SortWallPage } from './pages/SortWallPage';
 import { AdminPage } from './pages/AdminPage';
+import { AppMenu } from './components/AppMenu';
 import { startSyncEngine } from './lib/syncEngine';
 import type { UserRole } from './types/database';
 
@@ -26,9 +27,7 @@ function defaultRouteFor(role: UserRole): string {
 }
 
 function AppShell() {
-  const { session, profile, loading, signOut } = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
+  const { session, profile, loading } = useAuth();
 
   useEffect(() => {
     const stop = startSyncEngine();
@@ -43,27 +42,16 @@ function AppShell() {
     return <LoginPage />;
   }
 
-  const allowedTabs = Object.entries(TAB_ACCESS).filter(([, roles]) => roles.includes(profile.role));
+  const allowedTabs = Object.entries(TAB_ACCESS)
+    .filter(([, roles]) => roles.includes(profile.role))
+    .map(([path]) => path);
 
   return (
     <div className="app-shell">
-      <nav className="app-nav">
-        <div className="app-nav-brand">Picker &amp; Sort Wall</div>
-        <div className="app-nav-tabs">
-          {allowedTabs.map(([path]) => (
-            <button
-              key={path}
-              className={location.pathname.startsWith(path) ? 'active' : ''}
-              onClick={() => navigate(path)}
-            >
-              {path === '/picker' ? 'Picker' : path === '/sort-wall' ? 'Sort Wall' : 'Admin'}
-            </button>
-          ))}
-        </div>
-        <button className="app-nav-signout" onClick={() => void signOut()}>
-          Sign out
-        </button>
-      </nav>
+      {/* No persistent header/title bar by design — the hamburger menu is the
+          entire site chrome. Scanner screens render as fullscreen overlays
+          that cover this button, so there is nothing to conditionally hide. */}
+      <AppMenu tabs={allowedTabs} role={profile.role} />
 
       <main className="app-main">
         <Routes>
