@@ -112,8 +112,8 @@ begin
     raise exception 'QR code is not a recognized pigeon hole' using errcode = 'P0002';
   end if;
 
-  select pha.*, ph.*
-  into v_assignment, v_hole
+  select pha.*
+  into v_assignment
   from pigeon_hole_assignments pha
   join pigeon_holes ph on ph.id = pha.pigeon_hole_id
   where pha.order_id = p_order_id
@@ -125,6 +125,7 @@ begin
   if v_assignment.id is null then
     raise exception 'all allocated pigeon holes are already complete' using errcode = '40001';
   end if;
+  select * into v_hole from pigeon_holes where id = v_assignment.pigeon_hole_id;
   if v_qr.entity_id is distinct from v_assignment.pigeon_hole_id then
     raise exception 'Wrong pigeon hole. Scan the currently unlocked hole: %', v_hole.hole_number using errcode = '40001';
   end if;
@@ -183,8 +184,8 @@ begin
     raise exception 'QR code is not a recognized pigeon hole' using errcode = 'P0002';
   end if;
 
-  select pha.*, ph.*
-  into v_assignment, v_hole
+  select pha.*
+  into v_assignment
   from pigeon_hole_assignments pha
   join pigeon_holes ph on ph.id = pha.pigeon_hole_id
   where pha.order_id = p_order_id
@@ -196,6 +197,7 @@ begin
   if v_assignment.id is null or v_hole_qr.entity_id is distinct from v_assignment.pigeon_hole_id then
     raise exception 'Wrong pigeon hole. Complete the currently unlocked hole first.' using errcode = '40001';
   end if;
+  select * into v_hole from pigeon_holes where id = v_assignment.pigeon_hole_id;
 
   select * into v_bag_qr from qr_codes
   where code_value = p_bag_qr_value and code_type = 'bag' and status = 'active';
