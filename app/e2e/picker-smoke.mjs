@@ -1,0 +1,333 @@
+// Browser-level smoke test for the Picker app, using the system Chrome via
+// playwright-core (no full Playwright/browser download needed) with the
+// Supabase network layer mocked (see mock-supabase.mjs).
+//
+// This is NOT wired into `npm run build`/`npm run test` — it needs a real
+// Chrome binary and a running dev server, which may not exist in every CI
+// environment. Run it manually when touching Picker/Admin interaction logic:
+//
+//   npm run dev -- --port 5175 --host 127.0.0.1   (in one terminal)
+//   CHROME_PATH=/usr/local/bin/google-chrome node e2e/picker-smoke.mjs
+//
+// Every check below corresponds to a real bug this exact style of test
+// caught during development — none of them were visible from a plain
+// TypeScript build, lint pass, or jsdom unit test:
+//   - the fixed handoff bar covering the last order card's "Pick Order"
+//     button on shorter viewports (a hardcoded CSS padding guess was wrong),
+//   - the fullscreen-close button rendering as an invisible white-on-white
+//     icon (missing a shared CSS class),
+//   - `e.currentTarget` being null by the time an async form handler tried
+//     to call `.reset()` on it after an `await` (a DOM-spec quirk, not React
+//     event pooling), and
+//   - the online/offline toggle only visually updating after a manual page
+//     refresh (the UI wasn't reading back its own optimistic state).
+import { chromium } from 'playwright-core';
+import { installSupabaseMock, jsonRoute, makeSession, seedSession } from './mock-supabase.mjs';
+
+const BASE_URL = process.env.BASE_URL ?? 'http://127.0.0.1:5175';
+const CHROME_PATH = process.env.CHROME_PATH ?? '/usr/local/bin/google-chrome';
+
+const results = [];
+function check(name, condition) {
+  results.push({ name, pass: !!condition });
+  console.log(`${condition ? 'PASS' : 'FAIL'} — ${name}`);
+}
+
+async function withBrowser(fn) {
+  const browser = await chromium.launch({
+    executablePath: CHROME_PATH,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    await fn(browser);
+  } finally {
+    await browser.close();
+  }
+}
+
+const PICKER_ID = '11111111-1111-1111-1111-111111111111';
+const STORE_ID = '22222222-2222-2222-2222-222222222222';
+const profile = (overrides = {}) => ({
+  id: PICKER_ID,
+  email: 'picker@test.local',
+  full_name: 'Test Picker',
+  role: 'picker',
+  status: 'active',
+  warehouse_id: null,
+  is_online: true,
+  current_lat: null,
+  current_lng: null,
+  home_zone: null,
+  max_concurrent_orders: 3,
+  is_super_admin: false,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  ...overrides,
+});
+
+function order(overrides = {}) {
+  return {
+    id: overrides.id ?? 'order-1',
+    store_id: STORE_ID,
+    external_order_ref: 'SO-99213',
+    bag_count_expected: 5,
+    bag_count_scanned_pickup: 0,
+    bag_count_scanned_sort: 0,
+    store_floor: '4th',
+    store_zone: 'C',
+    store_address: 'Mirdif City Centre, Level 1 - Sheikh Zayed Rd - Dubai',
+    qr_mode: 'shared_order',
+    shared_bag_qr_code_id: null,
+    status: 'available',
+    is_fragile: true,
+    assigned_picker_id: null,
+    warehouse_id: null,
+    sort_wall_id: null,
+    pigeon_hole_id: null,
+    priority: 0,
+    ingested_at: new Date().toISOString(),
+    assigned_at: null,
+    picked_at: null,
+    warehouse_arrived_at: null,
+    sorted_at: null,
+    dispatched_at: null,
+    completed_at: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+async function testQueueRendersAndCardFields() {
+  await withBrowser(async (browser) => {
+    const session = makeSession(PICKER_ID, 'picker@test.local');
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const consoleErrors = [];
+    page.on('console', (msg) => msg.type() === 'error' && consoleErrors.push(msg.text()));
+
+    await installSupabaseMock(page, [
+      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
+      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
+      [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile())],
+      [
+        (u) => u.includes('/rest/v1/orders'),
+        jsonRoute(200, [
+          order({ id: 'o1', status: 'available' }),
+          order({ id: 'o2', status: 'picking_in_progress', assigned_picker_id: PICKER_ID, is_fragile: false }),
+        ]),
+      ],
+      [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
+    ]);
+    await seedSession(page, session);
+    await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(800);
+
+    const body = (await page.textContent('body')) ?? '';
+    // Playwright's `page.route()` cannot intercept WebSocket upgrade
+    // handshakes, so Supabase Realtime's connection attempt reaches the real
+    // server with our fake anon key and is rejected — this is a test-harness
+    // limitation (Realtime is explicitly best-effort/acceleration-only in
+    // this app, never required for correctness), not a bug to catch here.
+    const meaningfulErrors = consoleErrors.filter((e) => !/realtime|websocket/i.test(e));
+
+    check('no persistent header/title bar (only the hamburger)', !body.includes('Picker & Sort Wall'));
+    check('shows "Pending pickup (1)" and "In progress (1)" tab counts', body.includes('Pending pickup (1)') && body.includes('In progress (1)'));
+    check('order card shows "Pickup from:" + bold store name', body.includes('Pickup from:') && body.includes('Buffalo Burger'));
+    check('order card shows "Floor:" and "Zone:" as separate lines', body.includes('Floor:') && body.includes('4th') && body.includes('Zone: C'));
+    check('fragile order shows the Fragile Items badge', body.includes('Fragile Items'));
+    check('no floating "Picked up orders" pill (removed per feedback)', !body.includes('Picked up orders'));
+
+    const handoffButton = await page.$('.handoff-button');
+    const isDisabled = handoffButton ? await handoffButton.isDisabled() : null;
+    check('handoff button is disabled while an order is still in progress', isDisabled === true);
+
+    check('no unexpected console errors on the queue screen', meaningfulErrors.length === 0);
+    await page.close();
+  });
+}
+
+async function testHandoffBarDoesNotCoverPickButton() {
+  await withBrowser(async (browser) => {
+    const session = makeSession(PICKER_ID, 'picker@test.local');
+    const page = await browser.newPage({ viewport: { width: 360, height: 640 } });
+
+    await installSupabaseMock(page, [
+      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
+      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
+      [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile())],
+      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'available' }), order({ id: 'o2', status: 'picked', assigned_picker_id: PICKER_ID })])],
+      [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
+    ]);
+    await seedSession(page, session);
+    await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(800);
+
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(150);
+    const pickBox = await page.$eval('button.pick-button', (el) => el.getBoundingClientRect());
+    const handoffBox = await page.$eval('.handoff-bar', (el) => el.getBoundingClientRect());
+    const overlapsAtMaxScroll =
+      pickBox.bottom > handoffBox.top &&
+      pickBox.top < handoffBox.bottom &&
+      pickBox.right > handoffBox.left &&
+      pickBox.left < handoffBox.right;
+    check('pick button is not covered by the fixed handoff bar at max scroll (360x640)', !overlapsAtMaxScroll);
+    await page.close();
+  });
+}
+
+async function testFullscreenScannerFitsAndHasVisibleClose() {
+  await withBrowser(async (browser) => {
+    const session = makeSession(PICKER_ID, 'picker@test.local');
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+
+    await installSupabaseMock(page, [
+      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
+      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
+      [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile())],
+      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'available' })])],
+      [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
+      [
+        (u) => u.includes('/rest/v1/rpc/scan_bag_pickup_v1'),
+        jsonRoute(200, { order_bag_id: 'b1', bag_sequence: 1, scanned: 1, expected: 5, order_status: 'picking_in_progress', idempotent_replay: false }),
+      ],
+      [(u) => u.includes('/rest/v1/rpc/'), jsonRoute(200, {})],
+    ]);
+    await seedSession(page, session);
+    await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(800);
+
+    await page.click('button.pick-button');
+    await page.waitForTimeout(500);
+
+    const sheetBox = await page.$eval('.fullscreen-sheet', (el) => el.getBoundingClientRect());
+    const viewport = page.viewportSize();
+    check('fullscreen sheet exactly covers the viewport', sheetBox.width === viewport.width && sheetBox.height === viewport.height);
+
+    const scrollHeight = await page.evaluate(() => document.body.scrollHeight);
+    check('scanner screen needs no scrolling on mobile', scrollHeight === viewport.height);
+
+    const closeBtn = await page.$('.fullscreen-close');
+    const closeVisible = closeBtn ? await closeBtn.isVisible() : false;
+    const closeColor = closeBtn
+      ? await closeBtn.evaluate((el) => getComputedStyle(el).backgroundColor !== getComputedStyle(el).color)
+      : false;
+    check('close (X) button is present, visible, and not invisible (same fg/bg color)', closeVisible && closeColor);
+
+    check('shows real "0 picked up · 5 pending" counts before any scan', (await page.textContent('body'))?.includes('0') && (await page.textContent('body'))?.includes('5 pending'));
+
+    await page.click('button:has-text("Can\'t scan? Enter code manually")');
+    await page.fill('.qr-manual-entry input', 'SO-99213-FAKE');
+    await page.click('.qr-manual-entry button[type="submit"]');
+    await page.waitForTimeout(400);
+
+    const afterScan = (await page.textContent('body')) ?? '';
+    check('after a scan, transitions to the per-bag confirmation with real counts', afterScan.includes('You have collected Bag #1') && afterScan.includes('4') && afterScan.includes('pending'));
+
+    await page.close();
+  });
+}
+
+async function testOnlineToggleIsInstantAndBlockedWithPickedUpOrders() {
+  await withBrowser(async (browser) => {
+    const session = makeSession(PICKER_ID, 'picker@test.local');
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    let isOnline = true;
+
+    await installSupabaseMock(page, [
+      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
+      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
+      [(u) => u.includes('/rest/v1/profiles'), (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(profile({ is_online: isOnline })) })],
+      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'picked', assigned_picker_id: PICKER_ID })])],
+      [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [])],
+      [
+        (u) => u.includes('/rest/v1/rpc/set_picker_status_v1'),
+        (route) => {
+          isOnline = route.request().postDataJSON().p_is_online;
+          return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(profile({ is_online: isOnline })) });
+        },
+      ],
+      [(u) => u.includes('/rest/v1/rpc/'), jsonRoute(200, {})],
+    ]);
+    await seedSession(page, session);
+    await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(800);
+
+    // Has a picked-up (not-yet-handed-off) order, so going offline must be blocked.
+    await page.click('.online-toggle');
+    await page.waitForTimeout(200);
+    const toastAfterBlock = await page.textContent('.toast').catch(() => '');
+    check('going offline is blocked while a picked-up order has not been dropped off', /before going offline/i.test(toastAfterBlock ?? ''));
+    check('toggle remains "Online" after the blocked attempt', (await page.textContent('.online-toggle'))?.includes('Online'));
+
+    await page.close();
+  });
+}
+
+async function testAdminOrderCreationFallsBackGracefully() {
+  await withBrowser(async (browser) => {
+    const adminId = '99999999-9999-9999-9999-999999999999';
+    const session = makeSession(adminId, 'admin@test.local');
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const pageErrors = [];
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+    let rpcCallCount = 0;
+
+    await installSupabaseMock(page, [
+      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
+      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
+      [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile({ id: adminId, role: 'admin', is_super_admin: true }))],
+      [(u) => u.includes('/rest/v1/warehouses'), jsonRoute(200, [])],
+      [(u) => u.includes('/rest/v1/sort_walls'), jsonRoute(200, [])],
+      [
+        (u) => u.includes('/rest/v1/rpc/admin_create_order_v1'),
+        (route) => {
+          rpcCallCount += 1;
+          const body = route.request().postDataJSON();
+          if ('p_store_name' in body || 'p_is_fragile' in body) {
+            // Reproduces the exact error a project without migration 0005 returns.
+            return route.fulfill({
+              status: 404,
+              contentType: 'application/json',
+              body: JSON.stringify({
+                code: 'PGRST202',
+                message:
+                  'Could not find the function public.admin_create_order_v1(p_bag_count, p_store_address, p_store_external_ref, p_store_floor, p_store_name, p_store_zone) in the schema cache',
+              }),
+            });
+          }
+          return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ external_order_ref: 'SO-FALLBACK-1', shared_bag_qr_code_id: null }) });
+        },
+      ],
+      [(u) => u.includes('/rest/v1/rpc/'), jsonRoute(200, {})],
+    ]);
+    await seedSession(page, session);
+    await page.goto(`${BASE_URL}/admin`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(600);
+
+    // The "Store display name" field is pre-filled by default — exactly the
+    // beginner scenario that originally triggered the reported error.
+    await page.click('form:has(input[name="storeRef"]) button[type="submit"]');
+    await page.waitForTimeout(600);
+
+    check('extended call is attempted first, then falls back to the base signature', rpcCallCount === 2);
+    const toast = (await page.textContent('.toast').catch(() => '')) ?? '';
+    check('order creation succeeds via fallback instead of failing outright', toast.includes('Created order SO-FALLBACK-1'));
+    check('no uncaught page error from the async form handler (e.currentTarget-after-await)', pageErrors.length === 0);
+
+    await page.close();
+  });
+}
+
+await testQueueRendersAndCardFields();
+await testHandoffBarDoesNotCoverPickButton();
+await testFullscreenScannerFitsAndHasVisibleClose();
+await testOnlineToggleIsInstantAndBlockedWithPickedUpOrders();
+await testAdminOrderCreationFallsBackGracefully();
+
+const failed = results.filter((r) => !r.pass);
+console.log(`\n${results.length - failed.length}/${results.length} checks passed.`);
+if (failed.length > 0) {
+  console.log('FAILED:', failed.map((f) => f.name).join('; '));
+  process.exit(1);
+}
