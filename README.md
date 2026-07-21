@@ -6,7 +6,7 @@ The application code is now merged into `main`.
 
 ## Before you start
 
-You need free accounts for:
+
 
 1. [Supabase](https://supabase.com/) — you already created project
    `aetrwtubfifljkxwocpy`.
