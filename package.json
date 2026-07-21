@@ -5,6 +5,11 @@
   "scripts": {
     "build": "npm --prefix app ci && npm --prefix app run build",
     "dev": "npm --prefix app run dev",
-    "lint": "npm --prefix app run lint"
+    "lint": "npm --prefix app run lint",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.112.0"
   }
 }
