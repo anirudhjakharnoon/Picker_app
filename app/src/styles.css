@@ -1,6 +1,6 @@
 :root {
   /* Typography: bundled Figtree weights are imported in main.tsx so the
-     outdoor-critical UI remains consistent and works offline. */
+     outdoor-critical UI remains consistent on the online-only operations app. */
   --font-sans: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
   /* Sunlight/high-glare palette. All components consume these shared tokens. */
@@ -387,6 +387,124 @@ section {
   border-radius: 0.75rem;
   background: var(--color-surface);
   box-shadow: var(--shadow-surface);
+}
+
+.generated-code {
+  align-items: center;
+}
+
+.qr-code-preview {
+  display: block;
+  width: 112px;
+  height: 112px;
+  flex: 0 0 auto;
+  padding: 0.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  background: #ffffff;
+}
+
+.warehouse-qr-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.warehouse-qr {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.9rem;
+  background: var(--color-surface);
+}
+
+.warehouse-qr h2 {
+  margin: 0.15rem 0 0.35rem;
+}
+
+.warehouse-qr p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.warehouse-qr-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.warehouse-qr-code img {
+  width: min(40vw, 220px);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: #ffffff;
+}
+
+.warehouse-qr-code code,
+.warehouse-qr-code span {
+  max-width: 260px;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.admin-live-orders {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-order-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.8rem;
+  background: var(--color-surface);
+}
+
+.admin-order-row strong {
+  margin-right: 0.5rem;
+  color: var(--color-heading);
+}
+
+.admin-order-row p {
+  margin: 0.3rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.admin-order-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--color-text-muted);
+}
+
+.admin-order-qr .qr-code-preview {
+  width: 84px;
+  height: 84px;
+}
+
+.admin-assign-picker {
+  min-width: 170px;
+}
+
+.danger-zone {
+  border-color: var(--color-danger);
+}
+
+.danger-button {
+  background: var(--color-danger);
+  color: #ffffff;
 }
 
 .generated-code strong,
@@ -1116,6 +1234,81 @@ section {
   background: #000000;
 }
 
+/* Deliberate right-swipe confirmation for accepting an available order. */
+.order-accept-swipe {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 58px;
+  overflow: hidden;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-subtle);
+  color: var(--color-heading);
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.order-accept-swipe.is-dragging {
+  cursor: grabbing;
+}
+
+.order-accept-swipe.is-disabled {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+
+.order-accept-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left;
+  background: var(--color-success);
+  transition: transform 150ms ease-out;
+}
+
+.order-accept-swipe.is-dragging .order-accept-fill {
+  transition: none;
+}
+
+.order-accept-label {
+  position: relative;
+  z-index: 1;
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.order-accept-fill:not([style*="scaleX(0)"]) + .order-accept-label {
+  color: #ffffff;
+}
+
+.order-accept-thumb {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--color-heading);
+  color: #ffffff;
+  font-size: 2rem;
+  font-weight: 400;
+  line-height: 1;
+  transition: left 150ms ease-out;
+}
+
+.order-accept-swipe.is-dragging .order-accept-thumb {
+  transition: none;
+}
+
+.order-accept-swipe.is-disabled .order-accept-thumb {
+  background: var(--color-text-disabled);
+}
+
 .order-mini {
   display: flex;
   align-items: center;
@@ -1535,5 +1728,15 @@ section {
 
   .bags-grid {
     max-width: 300px;
+  }
+
+  .warehouse-qr,
+  .admin-order-row {
+    grid-template-columns: 1fr;
+  }
+
+  .warehouse-qr-code,
+  .admin-order-qr {
+    justify-self: start;
   }
 }

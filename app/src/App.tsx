@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthProvider';
 import { useAuth } from './auth/AuthContext';
@@ -7,7 +7,6 @@ import { PickerPage } from './pages/PickerPage';
 import { SortWallPage } from './pages/SortWallPage';
 import { AdminPage } from './pages/AdminPage';
 import { AppMenu } from './components/AppMenu';
-import { startSyncEngine } from './lib/syncEngine';
 import type { UserRole } from './types/database';
 
 // Which roles can see which tab (docs Section 4.0 route/tab table). This is
@@ -28,11 +27,6 @@ function defaultRouteFor(role: UserRole): string {
 
 function AppShell() {
   const { session, profile, loading } = useAuth();
-
-  useEffect(() => {
-    const stop = startSyncEngine();
-    return stop;
-  }, []);
 
   if (loading) {
     return <div className="loading-screen">Loading…</div>;

@@ -28,9 +28,9 @@ can apply them however is convenient:
 2. Copy the complete generated `supabase/setup.sql` file.
 3. Paste it into the SQL editor and click **Run**.
 
-`setup.sql` combines the four numbered migrations in the correct order:
-`0001_schema.sql`, `0002_rls.sql`, `0003_functions.sql`, and
-`0004_security_hardening.sql`.
+`setup.sql` combines all numbered migrations in the correct order, including
+the optional order metadata (`0005_order_fragile.sql`) and the operations
+upgrade (`0006_operations_capacity_and_qr.sql`).
 
 **Option B — Supabase CLI (if you link the project locally):**
 
@@ -45,11 +45,25 @@ these tables (they use `create table`, not `create table if not exists`,
 by design — Section 5 of the design doc explains why silent schema drift is
 worse than a loud failure here). If you need to iterate on the schema after
 first applying it, write a new numbered migration rather than editing
-`0001`–`0004` in place, then regenerate the one-file setup with:
+the original migrations in place, then add a new numbered migration and
+regenerate the one-file setup with:
 
 ```bash
 node scripts/build-supabase-setup.mjs
 ```
+
+### Upgrade an existing project
+
+If this project is already running, do **not** paste the whole `setup.sql`
+again. Run only `supabase/migrations/0006_operations_capacity_and_qr.sql` in
+Supabase SQL Editor. It adds the capacity/configuration fields, rotating gate
+QR RPC, multi-hole allocation, manual picker assignment, and guarded order
+reset RPC.
+
+Once it has run, the Admin panel's **Reset test orders** section can clear the
+current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this
+deletes orders, bag scans and order QR codes, while retaining users,
+warehouses, walls, pigeon holes and their QR codes.
 
 ## 2. Get your anon/publishable key
 

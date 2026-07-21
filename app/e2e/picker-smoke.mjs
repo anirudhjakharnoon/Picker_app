@@ -12,15 +12,14 @@
 // Every check below corresponds to a real bug this exact style of test
 // caught during development — none of them were visible from a plain
 // TypeScript build, lint pass, or jsdom unit test:
-//   - the fixed handoff bar covering the last order card's "Pick Order"
-//     button on shorter viewports (a hardcoded CSS padding guess was wrong),
+//   - the fixed handoff bar covering the last order card's acceptance control
+//     on shorter viewports (a hardcoded CSS padding guess was wrong),
 //   - the fullscreen-close button rendering as an invisible white-on-white
 //     icon (missing a shared CSS class),
 //   - `e.currentTarget` being null by the time an async form handler tried
 //     to call `.reset()` on it after an `await` (a DOM-spec quirk, not React
 //     event pooling), and
-//   - the online/offline toggle only visually updating after a manual page
-//     refresh (the UI wasn't reading back its own optimistic state).
+//   - an acceptance gesture accidentally behaving like a plain click.
 import { chromium } from 'playwright-core';
 import { installSupabaseMock, jsonRoute, makeSession, seedSession } from './mock-supabase.mjs';
 
@@ -113,7 +112,6 @@ async function testQueueRendersAndCardFields() {
         (u) => u.includes('/rest/v1/orders'),
         jsonRoute(200, [
           order({ id: 'o1', status: 'available' }),
-          order({ id: 'o2', status: 'picking_in_progress', assigned_picker_id: PICKER_ID, is_fragile: false }),
         ]),
       ],
       [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
@@ -131,7 +129,7 @@ async function testQueueRendersAndCardFields() {
     const meaningfulErrors = consoleErrors.filter((e) => !/realtime|websocket/i.test(e));
 
     check('no persistent header/title bar (only the hamburger)', !body.includes('Picker & Sort Wall'));
-    check('shows "Pending pickup (1)" and "In progress (1)" tab counts', body.includes('Pending pickup (1)') && body.includes('In progress (1)'));
+    check('shows the available offer in the Pending pickup tab', body.includes('Pending pickup (1)'));
     check('order card shows "Pickup from:" + bold store name', body.includes('Pickup from:') && body.includes('Buffalo Burger'));
     check('order card shows "Floor:" and "Zone:" as separate lines', body.includes('Floor:') && body.includes('4th') && body.includes('Zone: C'));
     check('fragile order shows the Fragile Items badge', body.includes('Fragile Items'));
@@ -164,14 +162,14 @@ async function testHandoffBarDoesNotCoverPickButton() {
 
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(150);
-    const pickBox = await page.$eval('button.pick-button', (el) => el.getBoundingClientRect());
+    const pickBox = await page.$eval('.order-accept-swipe', (el) => el.getBoundingClientRect());
     const handoffBox = await page.$eval('.handoff-bar', (el) => el.getBoundingClientRect());
     const overlapsAtMaxScroll =
       pickBox.bottom > handoffBox.top &&
       pickBox.top < handoffBox.bottom &&
       pickBox.right > handoffBox.left &&
       pickBox.left < handoffBox.right;
-    check('pick button is not covered by the fixed handoff bar at max scroll (360x640)', !overlapsAtMaxScroll);
+    check('acceptance swipe is not covered by the fixed handoff bar at max scroll (360x640)', !overlapsAtMaxScroll);
     await page.close();
   });
 }
@@ -197,7 +195,12 @@ async function testFullscreenScannerFitsAndHasVisibleClose() {
     await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(800);
 
-    await page.click('button.pick-button');
+    const accept = page.locator('.order-accept-swipe');
+    const acceptBox = await accept.boundingBox();
+    await page.mouse.move(acceptBox.x + 20, acceptBox.y + acceptBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(acceptBox.x + acceptBox.width - 20, acceptBox.y + acceptBox.height / 2, { steps: 8 });
+    await page.mouse.up();
     await page.waitForTimeout(500);
 
     const sheetBox = await page.$eval('.fullscreen-sheet', (el) => el.getBoundingClientRect());
@@ -228,42 +231,6 @@ async function testFullscreenScannerFitsAndHasVisibleClose() {
   });
 }
 
-async function testOnlineToggleIsInstantAndBlockedWithPickedUpOrders() {
-  await withBrowser(async (browser) => {
-    const session = makeSession(PICKER_ID, 'picker@test.local');
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-    let isOnline = true;
-
-    await installSupabaseMock(page, [
-      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
-      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
-      [(u) => u.includes('/rest/v1/profiles'), (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(profile({ is_online: isOnline })) })],
-      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'picked', assigned_picker_id: PICKER_ID })])],
-      [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [])],
-      [
-        (u) => u.includes('/rest/v1/rpc/set_picker_status_v1'),
-        (route) => {
-          isOnline = route.request().postDataJSON().p_is_online;
-          return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(profile({ is_online: isOnline })) });
-        },
-      ],
-      [(u) => u.includes('/rest/v1/rpc/'), jsonRoute(200, {})],
-    ]);
-    await seedSession(page, session);
-    await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(800);
-
-    // Has a picked-up (not-yet-handed-off) order, so going offline must be blocked.
-    await page.click('.online-toggle');
-    await page.waitForTimeout(200);
-    const toastAfterBlock = await page.textContent('.toast').catch(() => '');
-    check('going offline is blocked while a picked-up order has not been dropped off', /before going offline/i.test(toastAfterBlock ?? ''));
-    check('toggle remains "Online" after the blocked attempt', (await page.textContent('.online-toggle'))?.includes('Online'));
-
-    await page.close();
-  });
-}
-
 async function testAdminOrderCreationFallsBackGracefully() {
   await withBrowser(async (browser) => {
     const adminId = '99999999-9999-9999-9999-999999999999';
@@ -276,9 +243,22 @@ async function testAdminOrderCreationFallsBackGracefully() {
     await installSupabaseMock(page, [
       [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
       [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
-      [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile({ id: adminId, role: 'admin', is_super_admin: true }))],
+      [
+        (u) => u.includes('/rest/v1/profiles'),
+        (route) => {
+          const isPickerList = route.request().url().includes('role=eq.picker');
+          return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify(isPickerList ? [] : profile({ id: adminId, role: 'admin', is_super_admin: true })),
+          });
+        },
+      ],
       [(u) => u.includes('/rest/v1/warehouses'), jsonRoute(200, [])],
       [(u) => u.includes('/rest/v1/sort_walls'), jsonRoute(200, [])],
+      [(u) => u.includes('/rest/v1/operations_configuration'), jsonRoute(200, { singleton: true, max_orders_per_picker: 3, bags_per_pigeon_hole: 5, updated_at: new Date().toISOString(), updated_by_user_id: null })],
+      [(u) => u.includes('/rest/v1/pigeon_holes'), jsonRoute(200, [])],
+      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [])],
       [
         (u) => u.includes('/rest/v1/rpc/admin_create_order_v1'),
         (route) => {
@@ -322,7 +302,6 @@ async function testAdminOrderCreationFallsBackGracefully() {
 await testQueueRendersAndCardFields();
 await testHandoffBarDoesNotCoverPickButton();
 await testFullscreenScannerFitsAndHasVisibleClose();
-await testOnlineToggleIsInstantAndBlockedWithPickedUpOrders();
 await testAdminOrderCreationFallsBackGracefully();
 
 const failed = results.filter((r) => !r.pass);

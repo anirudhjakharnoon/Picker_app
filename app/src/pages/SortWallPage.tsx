@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePigeonHoles } from '../lib/usePigeonHoles';
 import { useOrders } from '../lib/useOrders';
 import { supabase } from '../lib/supabaseClient';
-import type { PigeonHoleStatus } from '../types/database';
+import { WarehouseGateQr } from '../components/WarehouseGateQr';
+import { useAuth } from '../auth/AuthContext';
+import type { PigeonHoleStatus, Warehouse } from '../types/database';
 
 const STATUS_LABEL: Record<PigeonHoleStatus, string> = {
   free: 'Free',
@@ -13,8 +15,10 @@ const STATUS_LABEL: Record<PigeonHoleStatus, string> = {
 };
 
 export function SortWallPage() {
+  const { profile } = useAuth();
   const { holes, sortWalls, refetch: refetchHoles } = usePigeonHoles();
   const { orders, refetch: refetchOrders } = useOrders();
+  const [holeOrderIds, setHoleOrderIds] = useState<Map<string, string>>(new Map());
   const [busyHole, setBusyHole] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -25,11 +29,40 @@ export function SortWallPage() {
 
   const orderByHoleId = useMemo(() => {
     const map = new Map<string, typeof orders[number]>();
+    holeOrderIds.forEach((orderId, holeId) => {
+      const order = orders.find((candidate) => candidate.id === orderId);
+      if (order) map.set(holeId, order);
+    });
     orders.forEach((o) => {
-      if (o.pigeon_hole_id) map.set(o.pigeon_hole_id, o);
+      // Legacy/migration-backfill fallback for orders assigned before the
+      // multi-hole model. New allocations use pigeon_hole_assignments.
+      if (o.pigeon_hole_id && !map.has(o.pigeon_hole_id)) map.set(o.pigeon_hole_id, o);
     });
     return map;
-  }, [orders]);
+  }, [orders, holeOrderIds]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadAssignments = async () => {
+      const { data } = await supabase
+        .from('pigeon_hole_assignments')
+        .select('order_id, pigeon_hole_id, status')
+        .in('status', ['reserved', 'active']);
+      if (cancelled) return;
+      setHoleOrderIds(
+        new Map(
+          ((data as { order_id: string; pigeon_hole_id: string }[] | null) ?? []).map((assignment) => [
+            assignment.pigeon_hole_id,
+            assignment.order_id,
+          ])
+        )
+      );
+    };
+    void loadAssignments();
+    return () => {
+      cancelled = true;
+    };
+  }, [holes, orders]);
 
   const dispatchOrder = async (orderId: string) => {
     setBusyHole(orderId);
@@ -78,6 +111,10 @@ export function SortWallPage() {
           <p>Live capacity, exceptions, and delivery handoffs at a glance.</p>
         </div>
       </header>
+
+      {profile?.warehouse_id && (
+        <WarehouseQrForStaff warehouseId={profile.warehouse_id} />
+      )}
 
       <div className="wall-summary" aria-label="Sort wall capacity summary">
         <div className="wall-summary-card">
@@ -149,4 +186,19 @@ export function SortWallPage() {
       ))}
     </div>
   );
+}
+
+function WarehouseQrForStaff({ warehouseId }: { warehouseId: string }) {
+  const [warehouse, setWarehouse] = useState<Warehouse | null>(null);
+
+  useEffect(() => {
+    void supabase
+      .from('warehouses')
+      .select('*')
+      .eq('id', warehouseId)
+      .maybeSingle()
+      .then(({ data }) => setWarehouse(data as unknown as Warehouse | null));
+  }, [warehouseId]);
+
+  return warehouse ? <WarehouseGateQr warehouse={warehouse} /> : null;
 }
