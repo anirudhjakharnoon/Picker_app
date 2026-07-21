@@ -54,7 +54,7 @@ Appendix B — Summary of PRD Challenges
 Strip away the app screens and this is a **chain-of-custody tracking system for physical bags**, wrapped around a **capacity-constrained physical buffer** (the sort wall), feeding a **hand-off to a third party** (the delivery partner). It has more in common with a warehouse management system (WMS) / cross-dock operation than with a typical CRUD SaaS product. That framing matters because it changes what "correct" means:
 
 - In a normal SaaS app, if the UI shows the wrong thing for a few seconds, it's a bug. Here, if the system shows "bag arrived" when it didn't, **a real bag gets physically lost**, an order never gets delivered, and a warehouse employee gets blamed for something the software let happen.
-- Every screen and API in this system is really a **witness statement**: "I, this specific device, at this specific time, scanned this specific code." The entire value of the system is in how faithfully and unambiguously it can prove or disprove that a hand-off occurred. This is why so much of this document is about idempotency, audit trails, and QR uniqueness rather than about UI polish.
+- Every screen and API in this system is really a **witness statement**: "I, this specific device, at this specific time, scanned this specific code." With shared order-level bag codes in v1, that statement proves an order-code scan action and declared count progression, not the identity of an individual physical bag. This is why the design emphasizes idempotency, honest evidence semantics, audit trails, and a forward-compatible QR model rather than UI polish.
 
 ## 1.2 High-level explanation
 
@@ -97,7 +97,7 @@ flowchart LR
 
 **Primary goals (must be true from day one):**
 
-- **Non-negotiable chain-of-custody integrity.** At any moment, for any order, we can answer "where are all of this order's bags, right now, and who last touched them" with evidence (a scan event), not inference.
+- **Non-negotiable order-level chain-of-custody integrity.** At any moment, for any order, we can answer the last recorded location, actor, and bag-count progress with scan evidence. In shared-QR v1, we cannot answer which individual physical bag was touched or distinguish repeated scans of one label from scans of different bags; the system must expose that limitation rather than infer certainty it does not have.
 - **Operate correctly with unreliable connectivity.** Pickers work inside stores and warehouses where Wi-Fi/cellular is often poor. The app must let a picker keep working — scanning bags — even with zero connectivity, and reconcile safely once back online.
 - **Never physically deadlock the sort wall.** Because pigeon holes are a finite physical resource, the software must guarantee there's always an escape valve (force-assign, overflow handling) so operations never have a bag with nowhere to go.
 - **Fast iteration at low volume, no rewrite at 100x volume.** At 100 orders/day, the team should be able to ship features in days, not weeks. At 10,000+ orders/day, the same conceptual model (not necessarily the same infrastructure) should still apply — see Section 18.
@@ -291,13 +291,12 @@ Recommended v1 algorithm (deliberately simple, upgradeable — see Section 18):
 3. Picker scans each bag's QR code, one at a time. Each successful scan is recorded (`bag_scans` with type `PICKUP`) and the in-app checklist updates (bag N of M collected).
 4. Once all M bags for the order are scanned, "Mark as Done" becomes enabled; tapping it transitions the order to `PICKED`.
 
-> **⚠️ PRD Challenge — the single most important integrity gap in the entire PRD: "all the QR codes on the bags for a given order are the same."** This is explicitly called out in the PRD as something to fix "soon as an improvement," but it should be treated as **launch-blocking, not a nice-to-have**, for these concrete reasons:
-> 1. **The scanning step becomes provably unable to prevent fraud or error.** If every bag of a 5-bag order carries the identical QR code, a picker can scan one physical bag five times and the system will report "5 of 5 collected" with 100% confidence while 4 bags remain on the store's shelf. There is no cryptographic or logical way to distinguish "I scanned 5 different bags" from "I scanned 1 bag 5 times" if the payload is identical.
-> 2. **This isn't a rare edge case — it's the default fastest path for a picker under time pressure**, and time pressure is guaranteed by gig-economy incentive structures (more deliveries = more pay). You should assume it *will* happen at scale, not that it *might*.
-> 3. **The fix is cheap and should ship in the very first release**, not be deferred: generate bag-level QR payloads as `{orderRef}-{bagSequence}` (e.g., `ORD10234-B1`, `ORD10234-B2`) at ingestion time, when the total bag count is already known from the Store API. If the *store* prints the QR codes (likely, since they pack the order), the platform must expose a simple "fetch QR codes to print for this order" endpoint/PDF as part of the ingestion contract, and enforce it as a requirement of the store integration, not an optional enhancement. See Section 9 for full QR versioning/rollout strategy including how to support stores who are not yet capable of printing per-bag codes (a v0 fallback still meaningfully better than the PRD's proposal).
+> **Accepted MVP constraint — all bags in an order use the same order-level QR code.** The system will support this explicitly in v1. A picker scans the same order code once for each physical bag, and each accepted scan advances a counter (`K of M`) by assigning the event to the next logical bag slot. This verifies that the picker performed M scan actions against the correct order code; it **does not prove that M distinct physical bags were scanned**. One physical bag can be scanned repeatedly and is indistinguishable from M distinct bags at the software level. This limitation must be reflected honestly in operating procedures, audit language, and customer promises.
+>
+> **Compensating controls for v1:** enforce the Store API's expected bag count as a hard maximum; require a deliberate scan cadence (dismiss the success state and reposition the QR in the camera frame before the next scan) to reduce accidental rapid duplicates; display large numbered progress ("Bag 2 of 5 recorded"); capture timestamp, device, picker, and optional photo/GPS evidence for every scan; require the store representative or picker to confirm the final physical count before "Done"; and monitor implausibly fast repeated scans for review. These controls reduce accidental misuse but do not establish distinct bag identity. Per-bag unique QR codes remain a planned improvement, and the schema/API must support that migration without rewriting historical v1 records (Section 9).
 
 **Edge cases (bag scanning):**
-- **Duplicate scan of the same bag QR within one session:** Reject with a clear in-app message ("This bag is already scanned") — trivially detectable once QR codes are bag-unique (see challenge above); with the PRD's shared-QR approach this specific fraud vector is **undetectable by design**, which is exactly why it must change.
+- **Repeated scan of the shared order QR:** Accept until the expected count M is reached, assigning each event to the next logical bag slot. Reject scan M+1 with `409 EXPECTED_BAG_COUNT_REACHED`. The system cannot determine whether scans 1..M came from different physical bags; the UX and audit record must not claim otherwise.
 - **Scan a bag belonging to a different, unrelated order:** Reject; show "This bag belongs to a different order" and do not count it. Prevents cross-order contamination during multi-order picking.
 - **Scan a QR that doesn't exist / is malformed / camera misreads:** Show a scan error with retry, never silently ignore (a silent no-op is indistinguishable from "app is frozen" to the picker).
 - **Picker can't find/scan a bag (missing from shelf):** Provide an explicit "Report missing bag" action rather than forcing the picker to abandon the whole order; this creates an `EXCEPTION` sub-state on that specific bag and notifies Ops, while the picker can still complete the rest and optionally proceed with a partial order (configurable business policy — see Section 6 Bag state machine).
@@ -408,9 +407,9 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Buttons:** Torch/flashlight toggle (stores are sometimes poorly lit); manual entry fallback (type the code if camera scanning repeatedly fails — critical accessibility/reliability fallback the PRD does not mention but should include, see Section 9.6); "Done" (only enabled at M/M).
 
-**States:** Scanning (camera active); Success flash (green check + haptic on a valid new scan); Duplicate (bag already scanned — amber warning, no count increment); Wrong order (red error — bag belongs to a different order); Invalid/unreadable code (red error, retry).
+**States:** Scanning (camera active); Success flash (green check + haptic, then increment the logical count); Expected count reached (the shared QR is no longer accepted for this stage); Wrong order (red error — code belongs to a different order); Invalid/unreadable code (red error, retry).
 
-**Errors:** Each error state above has distinct, specific copy — never a generic "Something went wrong," because the picker needs to know *what to do next* (try again vs. this bag isn't for you vs. this bag is already done).
+**Errors:** Each error state above has distinct, specific copy — never a generic "Something went wrong." Because codes are shared in v1, there is no "this physical bag was already scanned" state; the only enforceable upper bound is the expected count M.
 
 **Loading:** Camera permission request state if not yet granted, with a clear explanation of why it's needed before the OS prompt (improves grant rate).
 
@@ -548,7 +547,8 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 erDiagram
     STORES ||--o{ ORDERS : "packs"
     ORDERS ||--|{ ORDER_BAGS : "contains"
-    ORDER_BAGS ||--o{ QR_CODES : "identified by"
+    ORDERS ||--o{ QR_CODES : "shared code in v1"
+    ORDER_BAGS ||--o{ QR_CODES : "unique code in future"
     ORDER_BAGS ||--o{ BAG_SCANS : "scanned via"
     ORDERS ||--o{ STATUS_HISTORY : "has history"
     ORDERS ||--o| PICKER_ASSIGNMENTS : "assigned to"
@@ -597,6 +597,8 @@ erDiagram
 | `store_id` | `uuid` (FK → stores.id) | |
 | `external_order_ref` | `varchar(128)` | Store's order ID |
 | `bag_count_expected` | `smallint` | From Store API at ingestion; locked after first bag scan |
+| `qr_mode` | `enum('SHARED_ORDER','UNIQUE_BAG')` default `SHARED_ORDER` | Makes the evidence semantics and parser behavior explicit per order |
+| `shared_bag_qr_code_id` | `uuid` (FK → qr_codes.id, nullable) | Populated in v1; null for future `UNIQUE_BAG` orders |
 | `store_floor` | `varchar(32)` | |
 | `store_zone` | `varchar(64)` | |
 | `store_address` | `text` | Denormalized snapshot at ingestion time (address could change later at the store; the order should reflect what was true when picked) |
@@ -611,8 +613,8 @@ erDiagram
 
 - **PK:** `id`. **Unique:** `(store_id, external_order_ref)` — this is the idempotency guarantee from Section 3.2.
 - **Indexes:** `status`, `assigned_picker_id`, `warehouse_id`, `(status, ingested_at)` for the Ops "unassigned age" queries.
-- **Example row:** `id=..., store_id=8f1e..., external_order_ref="SO-99213", bag_count_expected=5, status=PICKED, assigned_picker_id=..., priority=0`
-- **Relationships:** many `order_bags`; one `picker_assignments` (current); one `pigeon_hole_assignments` (current); one `delivery_assignments` (current); many `status_history`; many `events`.
+- **Example row:** `id=..., store_id=8f1e..., external_order_ref="SO-99213", bag_count_expected=5, qr_mode=SHARED_ORDER, shared_bag_qr_code_id=..., status=PICKED`
+- **Relationships:** many `order_bags`; one shared `qr_codes` row in v1; one `picker_assignments` (current); one `pigeon_hole_assignments` (current); one `delivery_assignments` (current); many `status_history`; many `events`.
 
 ### 5.3.3 `order_bags`
 
@@ -620,16 +622,16 @@ erDiagram
 |---|---|---|
 | `id` | `uuid` (PK) | |
 | `order_id` | `uuid` (FK → orders.id) | |
-| `bag_sequence` | `smallint` | 1..N within the order — this is what makes each bag's QR unique (Section 9) |
+| `bag_sequence` | `smallint` | 1..N logical bag slot within the order. In shared-QR v1, this is assigned by scan order and does **not** identify a distinct physical bag; in future unique-QR versions it maps to the printed bag label. |
 | `status` | `enum('EXPECTED','PICKED_UP','SORTED','DISPATCHED','MISSING','LOST')` | |
-| `qr_code_id` | `uuid` (FK → qr_codes.id) | |
+| `qr_code_id` | `uuid` (FK → qr_codes.id, nullable) | Null in shared-order-QR v1; populated when this logical bag has its own unique QR in a future version. |
 | `picked_up_at`, `sorted_at`, `dispatched_at` | `timestamptz` (nullable) | |
 | `created_at`, `updated_at` | `timestamptz` | |
 
 - **PK:** `id`. **Unique:** `(order_id, bag_sequence)`.
 - **Indexes:** `order_id`, `qr_code_id`, `status`.
-- **Example row:** `id=..., order_id=..., bag_sequence=2, status=PICKED_UP, qr_code_id=...`
-- **Relationships:** one `orders`; one `qr_codes`; many `bag_scans`.
+- **Example row (shared-QR v1):** `id=..., order_id=..., bag_sequence=2, status=PICKED_UP, qr_code_id=NULL`
+- **Relationships:** one `orders`; optional one `qr_codes` in the future unique-bag mode; many `bag_scans`.
 
 ### 5.3.4 `qr_codes`
 
@@ -641,7 +643,7 @@ A single generic registry for **every** physical QR code in the system — bag, 
 | `code_type` | `enum('BAG','PIGEON_HOLE','WAREHOUSE_GATE')` | |
 | `code_value` | `varchar(255)` | The actual encoded payload (Section 9) |
 | `code_version` | `smallint` | Schema version of the payload format, allows evolving format without breaking old printed codes |
-| `entity_id` | `uuid` | Polymorphic pointer — the bag, hole, or warehouse this code identifies |
+| `entity_id` | `uuid` | Polymorphic pointer — an order (shared-QR v1), bag (future unique-QR version), hole, or warehouse |
 | `signature` | `varchar(512)` (nullable) | HMAC signature once signed-QR is implemented (Section 9.4) |
 | `status` | `enum('ACTIVE','REVOKED','EXPIRED')` | |
 | `expires_at` | `timestamptz` (nullable) | For rotating warehouse-gate codes |
@@ -649,18 +651,18 @@ A single generic registry for **every** physical QR code in the system — bag, 
 
 - **PK:** `id`. **Unique:** `code_value` (must be globally unique, never reused, even across revoked codes — reuse of a revoked value is a forgery/confusion risk).
 - **Indexes:** `(code_type, entity_id)`, `code_value` (unique btree, hit on every scan — this is the single hottest read path in the system, see Section 18).
-- **Example row:** `id=..., code_type=BAG, code_value="ORD10234-B2-9F3A", code_version=2, entity_id=<order_bags.id>, status=ACTIVE`
+- **Example row (shared-QR v1):** `id=..., code_type=BAG, code_value="ORD10234-9F3A", code_version=1, entity_id=<orders.id>, status=ACTIVE`
 
 ### 5.3.5 `bag_scans`
 
-The immutable event log of every physical scan — the single source of truth for chain-of-custody. Never updated after insert; corrections are new rows with a reference to what they correct, never in-place edits.
+The immutable event log of every scan action — the source of truth for v1 order-level chain-of-custody and count progression. It is not individual-bag identity evidence while `qr_mode=SHARED_ORDER`. Never updated after insert; corrections are new rows with a reference to what they correct, never in-place edits.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` (PK) | |
 | `client_event_id` | `uuid` | Client-generated, used for idempotent offline sync (Section 10) |
-| `order_bag_id` | `uuid` (FK → order_bags.id) | |
-| `qr_code_id` | `uuid` (FK → qr_codes.id) | The code actually scanned (redundant with order_bag_id's own QR for PICKUP scans, but for SORT scans this stores the *hole's* QR — see `scanned_entity_type`) |
+| `order_bag_id` | `uuid` (FK → order_bags.id) | In shared-QR v1, the server assigns each valid scan to the next logical bag slot; this is bookkeeping, not proof that a distinct physical bag was identified. |
+| `qr_code_id` | `uuid` (FK → qr_codes.id) | The code actually scanned. In shared-QR v1, multiple bag scans reference the same order-level QR row. |
 | `scan_type` | `enum('PICKUP','WAREHOUSE_ARRIVAL','SORT','MANUAL_CORRECTION')` | |
 | `scanned_entity_type` | `enum('BAG','PIGEON_HOLE','WAREHOUSE_GATE')` | What was physically scanned in this event |
 | `picker_assignment_id` | `uuid` (FK → picker_assignments.id, nullable) | |
@@ -916,9 +918,9 @@ Generic API-level idempotency (distinct from `bag_scans.client_event_id`, which 
 To make the schema concrete: order `SO-99213` from `Fresh Mart` with 3 bags —
 
 1. `orders` row created, `bag_count_expected=3`, `status=AVAILABLE`.
-2. 3 `order_bags` rows created (`bag_sequence` 1,2,3), each with a freshly minted `qr_codes` row (`code_value = "SO-99213-B1-..."`, etc.).
+2. 3 logical `order_bags` rows are created (`bag_sequence` 1,2,3) plus one shared, order-level `qr_codes` row (`code_value = "SO-99213-9F3A"`). Each logical bag's `qr_code_id` remains null in v1.
 3. `picker_assignments` row created (`status=OFFERED`), `picker_assignment_orders` links it to the order; picker accepts → `status=ACCEPTED`.
-4. Picker scans bag 1, 2, 3 at store → 3 `bag_scans` rows (`scan_type=PICKUP`), each flips the corresponding `order_bags.status` to `PICKED_UP`. Once all 3 are `PICKED_UP`, `orders.status` flips to `PICKED` (with a `status_history` row).
+4. Picker scans the shared order QR once for each of the 3 physical bags → 3 `bag_scans` rows (`scan_type=PICKUP`), all referencing the same QR. The server assigns scans sequentially to logical bag slots 1, 2, 3 and flips each to `PICKED_UP`. Once all 3 slots are `PICKED_UP`, `orders.status` flips to `PICKED` (with a `status_history` row). This records three scan actions but does not prove three distinct physical bags.
 5. Picker scans warehouse gate → `bag_scans` row (`scan_type=WAREHOUSE_ARRIVAL`, `scanned_entity_type=WAREHOUSE_GATE`); triggers `pigeon_hole_assignments` row (`status=RESERVED`) linking the order to a `FREE` hole, which flips to `RESERVED`.
 6. Picker scans bag 1 → app returns the reserved hole number → picker scans hole → `bag_scans` row (`scan_type=SORT`) → `order_bags.status=SORTED`. Repeat for bags 2, 3. On the third, `pigeon_hole_assignments.status=ACTIVE→FILLED`-equivalent (modeled via `pigeon_holes.status=FILLED`), `orders.status=SORTED→READY_FOR_DISPATCH`.
 7. Ops force-assigns a delivery partner → `delivery_assignments` row (`status=ASSIGNED`, `is_force_assigned=true`), `audit_logs` row recording the manual action with reason.
@@ -1016,7 +1018,7 @@ stateDiagram-v2
     OUT_OF_SERVICE --> FREE : staff/ops resolves issue
 ```
 
-**Invalid transitions:** `FREE → FILLED` directly (must pass through `RESERVED`/`PARTIALLY_FILLED` — every bag arrival must be individually scanned, never bulk-assumed); `FILLED → RESERVED` (a filled hole must be freed before it can be reserved again — no double-booking a physically occupied hole, enforced by the DB-level partial-unique constraint on `pigeon_hole_assignments`, Section 5.3.15).
+**Invalid transitions:** `FREE → FILLED` directly (must pass through `RESERVED`/`PARTIALLY_FILLED` — M bag scan actions must be recorded, never bulk-assumed; shared-QR v1 does not prove they represent M distinct bags); `FILLED → RESERVED` (a filled hole must be freed before it can be reserved again — no double-booking a physically occupied hole, enforced by the DB-level partial-unique constraint on `pigeon_hole_assignments`, Section 5.3.15).
 
 **Recovery:** `OUT_OF_SERVICE` always requires an explicit staff/ops action to both enter and exit (never automatic), because it represents a physical hardware fact the software cannot verify on its own.
 
@@ -1087,9 +1089,9 @@ This client-side state machine is a **UX convenience derived from server state**
   ```json
   {
     "error": {
-      "code": "BAG_ALREADY_SCANNED",
-      "message": "This bag has already been scanned for this order.",
-      "details": { "order_bag_id": "..." }
+      "code": "EXPECTED_BAG_COUNT_REACHED",
+      "message": "All expected bag scans for this order have already been recorded.",
+      "details": { "scanned": 3, "expected": 3 }
     }
   }
   ```
@@ -1119,14 +1121,12 @@ Receives a new/updated order from a store's system (webhook push model).
   {
     "order_id": "b6e1...",
     "status": "AVAILABLE",
-    "bags": [
-      { "bag_sequence": 1, "qr_code_value": "SO-99213-B1-9F3A" },
-      { "bag_sequence": 2, "qr_code_value": "SO-99213-B2-7C21" },
-      { "bag_sequence": 3, "qr_code_value": "SO-99213-B3-A02D" }
-    ]
+    "bag_count": 3,
+    "shared_bag_qr_code_value": "SO-99213-9F3A",
+    "qr_mode": "SHARED_ORDER"
   }
   ```
-  Returning the bag-level QR values here is what allows a store's own printing system to print correct, unique labels immediately — this response contract is the concrete mechanism behind the Section 3.4/Section 9 QR-uniqueness fix.
+  The store prints the returned shared code on every bag in the order. `qr_mode` is explicit so a future `UNIQUE_BAG` response can coexist without breaking v1 store integrations.
 - **Errors:** `400 INVALID_BAG_COUNT` (zero or negative); `409 ORDER_ALREADY_CANCELLED` (if a cancel raced ahead of this call).
 
 ### `PATCH /api/v1/stores/{storeId}/orders/{externalOrderRef}`
@@ -1162,7 +1162,7 @@ The single most important endpoint in the system.
   ```json
   {
     "client_event_id": "5e2f...",
-    "qr_code_value": "SO-99213-B2-7C21",
+    "qr_code_value": "SO-99213-9F3A",
     "scan_type": "PICKUP",
     "client_captured_at": "2026-07-21T09:14:02Z",
     "gps_lat": 19.071, "gps_lng": 72.869
@@ -1171,13 +1171,14 @@ The single most important endpoint in the system.
 - **Response `200 OK`:**
   ```json
   {
-    "order_bag_id": "...",
-    "bag_sequence": 2,
+    "logical_order_bag_id": "...",
+    "logical_bag_sequence": 2,
     "order_progress": { "scanned": 2, "expected": 3 },
     "order_status": "PICKING_IN_PROGRESS"
   }
   ```
-- **Errors:** `409 BAG_ALREADY_SCANNED`; `409 BAG_BELONGS_TO_DIFFERENT_ORDER`; `404 QR_NOT_RECOGNIZED`; `409 INVALID_STATE_TRANSITION` (e.g., scanning a bag for an order already `CANCELLED`).
+- **Shared-QR behavior:** each request with a new `client_event_id` and the correct order-level QR claims the next `EXPECTED` logical bag slot. A transport retry with the same `client_event_id` is idempotent and does not increment the count; a deliberate new scan has a new ID and increments until M.
+- **Errors:** `409 EXPECTED_BAG_COUNT_REACHED`; `409 QR_BELONGS_TO_DIFFERENT_ORDER`; `404 QR_NOT_RECOGNIZED`; `409 INVALID_STATE_TRANSITION` (e.g., scanning for an order already `CANCELLED`).
 - **This endpoint doubles for `SORT`-type scans** with `scan_type: "SORT"` and an additional `pigeon_hole_qr_value` field — kept as one endpoint rather than two because the client-side offline queue (Section 10) benefits from a single scan-submission code path regardless of scan type; the server dispatches internally based on `scan_type`.
 
 ### `POST /api/v1/pickers/me/warehouse-arrival`
@@ -1290,43 +1291,61 @@ The PRD's example — bag scanned → update bag status → update order progres
 
 # 9. QR Code Strategy
 
-## 9.1 Current PRD approach and why it must change before launch
+## 9.1 Current shared-order QR approach
 
-Restating the challenge raised in Section 3.4 with full technical detail here, since QR strategy is foundational enough to warrant its own section: the PRD states "all the QR codes on the bags for a given order are the same" and frames unique-per-bag codes as a future improvement. **This document's strong recommendation is that per-bag uniqueness is implemented in the very first release**, because:
+For the MVP, **every bag in an order carries the same order-level QR code**, as required by the product constraint. The system treats each new scan action as the next logical bag slot until the Store API's expected count M is reached.
 
-- It is the only way the "scan every bag" step has any evidentiary value at all. An identical code repeated N times cannot distinguish "N distinct physical objects were each touched once" from "1 physical object was touched N times." This isn't a minor accuracy gap — it removes the entire point of scanning bags individually rather than just tapping "collected 5 bags" as a number.
-- It costs almost nothing extra to implement: bag count is already known from the Store API payload at ingestion (Section 3.2); generating N unique values instead of reusing 1 value is a trivial code change, not a new capability.
-- The operational cost is on the **printing** side, not the software side — if a store cannot yet print N distinct labels, Section 9.6 provides a fallback that is still strictly better than the PRD's approach without requiring any new hardware.
+This design can establish:
+- the scanned code belongs to the assigned order;
+- the same picker/device performed M separately recorded scan actions;
+- when and where those actions occurred; and
+- no more than M pickup/sort scans were accepted for that stage.
+
+It cannot establish:
+- that scans 1..M came from M distinct physical bags;
+- which physical bag corresponds to logical slot 1, 2, etc.; or
+- whether the same printed label was repeatedly presented.
+
+This is an accepted v1 trade-off, not a hidden guarantee. The UI, audit log, reporting, and customer-facing operational claims must say "M bag scans recorded" or "declared bag count confirmed," not "M uniquely identified bags verified."
 
 ## 9.2 QR payload format
 
-**v1 (current recommendation):**
+**v1 (shared-order QR):**
 ```
-{orderExternalRef}-B{bagSequence}-{shortHash}
-e.g.  SO-99213-B2-7C21
+{orderExternalRef}-{shortHash}
+e.g.  SO-99213-9F3A
 ```
-- `shortHash` is a short (4-character) hash derived from the internal `order_bags.id` — its purpose is **not security** (see v2 below for that), but collision-avoidance and casual-guessability reduction (a picker or curious third party shouldn't be able to derive "B3" exists and hand-write a fake label that matches format).
+- `shortHash` is derived from the internal `orders.id`; its purpose is **not security** (see v2 below), but collision avoidance and reduced casual guessability.
 - Encoded in the QR as plain text (not a URL) to keep scanning/parsing trivial and avoid any dependency on internet connectivity to interpret a scanned code (a URL-based QR that requires hitting a server just to know *what* was scanned, before even getting to the *scan-recording* API call, adds a failure mode with zero benefit here).
+
+**Future unique-bag version:** `{orderExternalRef}-B{bagSequence}-{shortHash}`. The parser uses `code_version`/`qr_mode` rather than guessing from string shape.
 
 **Pigeon hole codes:** `HOLE-{sortWallId short}-{holeNumber}`, e.g., `HOLE-WA-P482`. **Warehouse gate codes:** `GATE-{warehouseId short}-{issuedAt or rotation window}`, e.g., `GATE-WH1-20260721T09`.
 
 ## 9.3 Versioning
 
-`qr_codes.code_version` (Section 5.3.4) exists specifically so the payload *format* can evolve (e.g., adding a signature in v2 below) without invalidating already-printed v1 labels still circulating in a warehouse. The scan-validation server logic branches on `code_version` to parse/validate accordingly. **Old codes are never force-migrated** — they simply age out naturally as orders complete; only newly minted codes use the newer format.
+`qr_codes.code_version` exists so shared order-level codes and future unique bag-level codes can coexist. `code_version=1` maps a `BAG` code to `orders.id`; a later unique version maps each code to `order_bags.id`. Historical v1 scans remain valid and explicitly marked `qr_mode=SHARED_ORDER`; migration only affects newly created orders, so no in-flight labels need reprinting.
 
 ## 9.4 Security / anti-forgery (v2, recommended within the first 2–3 months, not launch-blocking)
 
-Plain-text order-reference-based codes (v1) are trivially guessable/forgeable by anyone who understands the format — low risk at 100 orders/day with a small, known picker pool, but a real risk once the picker pool grows past the point where every picker is personally vetted/trusted (Section 18's 1,000+/day milestone). **v2 payload:** append an HMAC signature computed server-side at code-generation time over `(code_type, entity_id, code_version)` using a server-held secret key (Section 17.4). Validation on scan recomputes the HMAC and rejects mismatches — this makes hand-crafting a fake-but-plausible code computationally infeasible without the secret, closing the forgery gap entirely.
+Plain-text order-reference-based codes (v1) are guessable/forgeable by anyone who understands the format. A signed shared-order code can prevent forgery, but it still cannot prove distinct bag identity. **v2 security payload:** append an HMAC signature computed over `(code_type, entity_id, code_version)` using a server-held key. **Future identity version:** mint one signed code per bag. Security signing and bag uniqueness solve different problems and should not be conflated.
 
 ## 9.5 Validation rules (applies today, v1)
 
 - A scanned code must resolve to an `ACTIVE` row in `qr_codes` — `REVOKED`/`EXPIRED` codes are rejected with a specific error (`410 CODE_REVOKED`), never silently treated as "not found" (a revoked code being scanned is itself a signal worth surfacing — e.g., someone is using an old, reprinted label).
 - Scan-type-specific validation: a `BAG` code is only valid for `scan_type IN (PICKUP, SORT)`; a `PIGEON_HOLE` code is only valid as the second half of a `SORT` scan; a `WAREHOUSE_GATE` code is only valid for the arrival-scan endpoint. Cross-using a code type on the wrong endpoint is rejected (`400 WRONG_CODE_TYPE`) — this alone catches a large class of picker confusion errors for free.
-- **Duplicate scans:** rejected with `409 BAG_ALREADY_SCANNED` for `PICKUP`/`SORT` types on the same bag within the same order lifecycle — but the *attempt* is still recorded (`bag_scans.is_valid = false`) rather than discarded, because a pattern of repeated duplicate-scan attempts from one picker is a meaningful signal (Section 21).
+- **Repeated shared-code scans:** accepted with a new `client_event_id` until expected count M. Transport retries with the same ID are idempotent; scan M+1 is rejected with `409 EXPECTED_BAG_COUNT_REACHED`. Rapid scan cadence can be flagged, but must not be represented as proof of duplication.
 
-## 9.6 Fallback for stores that cannot yet print per-bag unique codes
+## 9.6 Migration to unique bag codes
 
-Not every store integration will be mature enough to print N distinct labels on day one. Rather than reverting to the PRD's shared-code approach for these stores, the recommended fallback is: **the platform prints/generates its own small supplementary sticker (or the picker's phone displays a code to hand-write onto masking tape) at the point of pickup**, sequentially numbered as the picker scans each bag for the first time using the *order-level* code the store already has. Concretely: the store's single shared QR is scanned, but the app requires the picker to also capture a distinguishing action per bag — either (a) a photo of each bag (weak, but non-zero evidentiary value and dramatically better than nothing), or (b) applying and scanning a platform-supplied numbered sub-label. This is explicitly a **transitional, worse-than-v1** fallback, not a recommended steady state, and the Admin Panel (Section 12) should surface "stores still on legacy shared-QR" as a tracked integration-debt metric so it gets closed out, not forgotten.
+The v1 schema intentionally preserves logical `order_bags` rows even though they do not yet have individual QR codes. Migration is additive:
+1. introduce `qr_mode=UNIQUE_BAG` for selected stores/new orders;
+2. mint one `qr_codes` row per logical bag and populate `order_bags.qr_code_id`;
+3. return/print N distinct values from the Store Ingestion API;
+4. change duplicate handling from count-based to identity-based for those orders; and
+5. keep the shared-order parser indefinitely for historical/in-flight v1 orders.
+
+No table rewrite or historical-data reinterpretation is required. The Admin Panel should report adoption by QR mode so rollout can be gradual and evidence-based.
 
 ## 9.7 Lost / damaged QR
 
@@ -1345,19 +1364,19 @@ Section 1.3 already states this as a primary goal — restating the "why" concre
 ## 10.2 Local storage design
 
 - **On-device store:** an embedded SQLite database (via a lightweight ORM appropriate to the chosen mobile framework — Section 19) mirroring the minimal server schema needed offline: current assignments, their orders/bags/QR values, and a durable **outbound action queue**.
-- **What gets cached proactively, and when:** the moment an order is assigned to a picker (`order.assigned` event, Section 8.3), the full order detail — including every bag's QR code value — is pushed to/pulled by that picker's device *before* they need it, not fetched lazily at scan time. This is the single most important offline design decision: **scanning must never require a network call to know "is this QR valid for this order"** — that validation can happen entirely against the locally cached bag list, with the server call only needed to durably *record* the scan.
+- **What gets cached proactively, and when:** the moment an order is assigned, its expected bag count, shared order-level QR value, QR mode, and logical bag slots are cached before they are needed. Scanning must never require a network call to know "does this code belong to this order"; local validation and count progression work offline.
 - **Outbound queue:** every user action that needs server durability (scan, accept/decline assignment, online/offline toggle, report-issue) is written to a local `pending_actions` table **immediately**, before any network attempt, with the exact request payload (including its `client_event_id`/`Idempotency-Key`) already generated client-side. The in-app UI reflects the *local, optimistic* result of the action instantly; network sync is a background concern the picker is only peripherally aware of (a small, unobtrusive sync-status indicator, never a blocking spinner on the primary action).
 
 ## 10.3 Retry and sync
 
 - A background sync worker (runs on a timer, on connectivity-change events, and on app foreground) drains `pending_actions` in **creation order**, submitting each to its corresponding API endpoint with its original `Idempotency-Key`/`client_event_id`.
-- **Retry policy:** exponential backoff with jitter (e.g., 2s, 4s, 8s, 16s, capped at ~2 minutes), indefinitely for transient failures (network errors, 5xx) — these are *expected*, not exceptional, given the environment. **Non-retryable** failures (4xx business-logic rejections like `BAG_ALREADY_SCANNED`) are surfaced to the user (if still relevant/visible) and removed from the queue — retrying a request the server has already told us is invalid would loop forever for no benefit.
-- **Ordering matters for some actions, not others.** Scan events for *different* bags can sync in any order without correctness issues (each is independent). But "accept assignment" must sync before any scan for that assignment is meaningfully processed server-side — the sync worker respects a simple per-assignment sequencing rule (accept/decline before scans, scans before "mark done") baked into the queue's processing order, not left to chance.
+- **Retry policy:** exponential backoff with jitter (e.g., 2s, 4s, 8s, 16s, capped at ~2 minutes), indefinitely for transient failures. Non-retryable failures such as `EXPECTED_BAG_COUNT_REACHED` are surfaced and removed from the queue.
+- **Ordering matters more with shared codes.** Pickup scans for one order must sync in local creation order because the server assigns each to the next logical slot. "Accept assignment" syncs before scans; scans sync before "mark done."
 - **Partial connectivity (e.g., can reach the internet but the specific API is degraded):** standard circuit-breaker behavior client-side — after repeated failures to a specific endpoint, back off more aggressively and surface a persistent (non-blocking) "having trouble syncing, will keep trying" banner rather than silently retrying forever with no visibility.
 
 ## 10.4 Conflict resolution
 
-This is where the Section 5.1 architectural decision (events, not just mutable status) pays for itself directly: **because every scan is an independent, timestamped, idempotent event rather than an in-place state overwrite, there is almost no true "conflict" to resolve in the traditional distributed-systems sense.** Two pickers' devices can never overwrite each other's scan of the *same specific bag*, because the second `PICKUP`/`SORT` scan of an already-scanned bag is rejected by the server as a duplicate (Section 9.5), full stop — it's a business rule violation, not a merge conflict.
+Every scan remains an independent, timestamped, idempotent event. With a shared code, the server atomically claims the next unfilled logical slot under a row lock and rejects events after M. A retry with the same `client_event_id` returns its original slot; a new event ID is a new count action. If local optimistic state conflicts with server state (for example, an Ops correction already filled the last slot), server state wins and the app reconciles the displayed count. No conflict policy can infer distinct physical bag identity from a shared code.
 
 The only genuine conflict class is **assignment-acceptance races** (Section 3.3) — two pickers, both offline, both locally "accept" the same offered order before either syncs. Resolution: the server's conditional UPDATE (`WHERE assigned_picker_id IS NULL`) makes exactly one accept win upon sync, deterministically, based on **server arrival order, not client timestamp** (client clocks cannot be trusted for ordering decisions — Section 17). The losing picker's app receives a `409 ALREADY_ASSIGNED` on sync, silently removes that order from their local queue, and shows a brief non-alarming notice ("This order was already picked up by another picker") — never a blaming or confusing error.
 
@@ -1435,7 +1454,7 @@ The Admin Panel is the superset control surface — everything Ops needs day-to-
 ## 12.4 Stores & Delivery Partners (integration management)
 
 - Onboard a new store: name, integration type, generate/rotate API key, set default zone.
-- **Integration health view per store:** last successful order ingestion timestamp, recent error rate, whether they're still on the Section 9.6 legacy shared-QR fallback (explicitly tracked so it doesn't become permanent by default).
+- **Integration health view per store:** last successful order ingestion timestamp, recent error rate, and current QR mode (`SHARED_ORDER` or future `UNIQUE_BAG`) with adoption reporting for a gradual migration (Section 9.6).
 - Onboard/manage delivery partners similarly; configure the **backup partner chain** per warehouse (Section 13.5) used for automatic reassignment on no-show.
 
 ## 12.5 Users & Roles
@@ -1712,7 +1731,7 @@ Every option below is scored against the same five criteria, weighted for **this
 | **Postgres (self-managed or via a managed host)** | High — mature tooling, ORMs, migrations | Low at small scale, predictable growth | Excellent — the most universally known relational DB skill | Low if managed (backups/patching handled); moderate if self-hosted | Excellent, proven at every scale tier in Section 18 | ✅ **Recommended as the core database** |
 | **MySQL** | High, comparable to Postgres | Comparable | Excellent, comparable | Comparable | Good, comparable | Viable alternative; Postgres preferred here mainly for richer JSON/`jsonb` support (used throughout Section 5 for `events.payload`, `audit_logs.metadata`) and stronger native support for the partial/conditional unique constraints this schema relies on (Section 5.3.15) |
 | **SQLite** | Very high for a single-device/embedded use case | Free | Universal | Trivial | **Wrong tool for a multi-writer, multi-actor server system** — no real concurrent-write story for dozens of pickers hitting the same tables simultaneously | ❌ Rejected for the server; ✅ **correct choice for the picker app's on-device offline store** (Section 10.2) — this is the one place in the whole stack SQLite is exactly right |
-| **Firebase (Firestore)** | Very high initial velocity, especially for realtime UI updates | Can get expensive fast at write-heavy, per-document-read-billed workloads (this system's scan volume is exactly write-heavy) | Good, but a shrinking pool relative to SQL | Low day-to-day, but **schema/data-integrity enforcement is weak** — this system needs DB-level constraints (unique bag QR, single active hole reservation, conditional-update assignment races, Section 5) that a document DB either can't express or requires fragile application-level enforcement for | Firestore scales horizontally well, but the *data model mismatch* (this is a deeply relational domain — orders→bags→scans→holes→assignments, Section 5.2's ERD) means you'd be fighting the database's grain the entire time, not benefiting from its strengths | ❌ **Not recommended.** The PRD's domain is exactly the kind of multi-entity, constraint-heavy, transactional workload relational databases exist for; Firebase's speed advantage mostly shows up for *simpler* data shapes than this one |
+| **Firebase (Firestore)** | Very high initial velocity, especially for realtime UI updates | Can get expensive fast at write-heavy, per-document-read-billed workloads (this system's scan volume is exactly write-heavy) | Good, but a shrinking pool relative to SQL | Low day-to-day, but **schema/data-integrity enforcement is weak** — this system needs DB-level constraints (unique QR registry, atomic expected-count slot claiming, single active hole reservation, conditional-update assignment races, Section 5) that a document DB either cannot express cleanly or requires fragile application-level enforcement for | Firestore scales horizontally well, but the *data model mismatch* (this is a deeply relational domain — orders→bags→scans→holes→assignments, Section 5.2's ERD) means you'd be fighting the database's grain the entire time, not benefiting from its strengths | ❌ **Not recommended.** The PRD's domain is exactly the kind of multi-entity, constraint-heavy, transactional workload relational databases exist for; Firebase's speed advantage mostly shows up for *simpler* data shapes than this one |
 | **Airtable / Google Sheets** | Extremely fast to start, zero setup | Cheap at tiny scale, but hits row/API limits quickly | N/A — no "hiring" concept, anyone can edit | Effectively none, but that's the problem — no real constraint enforcement, no transactional guarantees, trivial for a warehouse staffer to accidentally corrupt a live operational record | None beyond a few thousand rows before it becomes unusable | ❌ **Not recommended for the core system.** Legitimate use: a founder's very first *prototype* to validate the workflow concept with a handful of real orders before writing any code at all — genuinely useful for that narrow purpose (see Section 20), but must never become "the database" for anything with real users depending on it |
 | **Xano / Appwrite / PocketBase** (no-code/low-code backend platforms) | Very high initial velocity for simple CRUD apps | Low to moderate | Small, specialized hiring pool; hard to find engineers with deep experience in these specific platforms compared to plain Postgres+API-framework | Convenient day-to-day, but **you inherit the platform's opinions about data modeling, and complex custom business logic (Section 3, Section 13's allocation algorithm with `FOR UPDATE SKIP LOCKED`, Section 6's strict state machines) is exactly what these tools are weakest at** — they excel at "build a CRUD admin panel fast," not "implement contention-safe resource allocation with strict invariants" | Generally poor for anything beyond the platform's supported scale tier; migrating off them later, once outgrown, is a genuine rewrite (the opposite of this document's core requirement) | ❌ **Not recommended for the core transactional platform.** Could be reasonably used for a small, genuinely CRUD-only internal tool *adjacent* to the core system (e.g., an internal FAQ/wiki) — never for orders/bags/scans/holes |
 
@@ -1764,7 +1783,7 @@ This stack is not the only valid answer — it is the answer that best satisfies
 
 This is achievable with the **full architecture described in this document**, not a different, lesser architecture — the design throughout this document was deliberately kept simple enough (Section 1.3, Section 18.2) that "the right long-term design" and "the fastest MVP" are the same thing at this stage, which is the entire point of avoiding premature complexity. Concretely, in 4 weeks a small team should be able to ship:
 
-- Week 1: Schema (Section 5) + auth (Section 11) + Store ingestion API (Section 7.2) with per-bag unique QR generation (Section 9.2 — **non-negotiable, included from day one, not deferred**).
+- Week 1: Schema (Section 5) + auth (Section 11) + Store ingestion API (Section 7.2) with shared order-level QR generation, explicit `qr_mode`, expected-count enforcement, and a forward-compatible path to future unique bag codes (Section 9).
 - Week 2: Picker App — order queue, bag scanning at store, offline queue basics (Section 10, simplified: local queue + retry, without the full priority-sequencing nuance — see Section 20.3 on what can be cut).
 - Week 3: Warehouse arrival, sort-wall allocation (Section 13.1/13.2's core allocation algorithm — this is genuinely small, a single `FOR UPDATE SKIP LOCKED` query), pigeon hole scanning, basic Sort Wall Website dashboard (Section 4.9, without live WebSocket updates yet — polling every few seconds is a fine MVP substitute).
 - Week 4: Manual delivery-partner assignment (Section 3.7, Ops-driven, no partner API integration needed yet), basic Admin Panel (orders search, manual corrections, Section 12.1), and hardening/testing of the state machines (Section 6) specifically, since these are the highest-consequence code paths to get right before real bags are on the line.
@@ -1784,7 +1803,7 @@ Achievable, but requires explicit, conscious corner-cutting — enumerated exact
 
 **What must absolutely NOT be compromised, even at 2 weeks, because retrofitting it later is disproportionately expensive or risks real operational/financial harm:**
 
-1. **Per-bag unique QR codes (Section 3.4/9.1).** This is the one item in this entire document repeatedly flagged as launch-blocking, not deferrable, because it is the foundation the entire chain-of-custody promise rests on, and — unlike almost everything else on the "safe to cut" list — it cannot be fixed later without physically reprinting every QR code already in the field and retraining every store/picker on a new format. Every other cut item is a software update; this one is a physical-world redo.
+1. **Honest shared-QR semantics and expected-count enforcement (Section 3.4/9.1).** The system must never claim it uniquely verified physical bags. It must atomically stop at M scans, distinguish transport retries from deliberate scan actions, and preserve `qr_mode` so unique codes can be introduced later without reinterpreting history.
 2. **The event-sourced/immutable-scan-log data model (Section 5.1, `bag_scans`/`status_history` as append-only).** Building this "properly" from day one costs almost nothing extra (it's not more code than a naive mutable-status design, just a different shape), but retrofitting it after the fact means reconstructing history that was never captured — an unrecoverable loss, not a refactor.
 3. **Idempotency on every scan/mutation endpoint (Section 7.1, Section 10.4).** Skipping this to save time is a false economy — the very first flaky-network double-submit (guaranteed to happen given the operating environment, Section 10.1) creates a duplicate/incorrect record that directly corrupts the operational data the whole business runs on.
 4. **The sort-wall allocation transaction safety (`FOR UPDATE SKIP LOCKED`, Section 13.2).** This is a handful of lines of SQL, not a multi-week feature — there is no time pressure that justifies skipping it, and skipping it risks double-allocating a physical hole to two orders simultaneously, a direct, visible, embarrassing operational failure on day one.
@@ -1792,7 +1811,7 @@ Achievable, but requires explicit, conscious corner-cutting — enumerated exact
 
 ## 20.3 The single sentence version of this section, for the CTO who reads only one sentence
 
-**Cut automation, cut integrations, cut UI polish — never cut data integrity, idempotency, or the per-bag QR fix, because those three are the only things in this entire system that are meaningfully harder (or physically impossible) to retrofit after real bags have already moved through the system.**
+**Cut automation, integrations, and UI polish — never cut immutable scan history, idempotency, atomic capacity/count controls, or honest representation of what a shared QR can and cannot prove.**
 
 ---
 
@@ -1802,13 +1821,13 @@ Each risk includes its category, a concrete failure scenario, and a mitigation a
 
 | # | Category | Risk | Concrete failure scenario | Mitigation |
 |---|---|---|---|---|
-| 1 | Data integrity | Shared bag QR codes make individual-bag verification meaningless | Picker scans 1 bag 5 times, order marked fully picked, 4 bags remain at store, customer never receives them | Per-bag unique QR from day one (Section 3.4/9.1/20.2) |
+| 1 | Data integrity | Shared order-level QR codes cannot prove distinct bag identity | Picker scans 1 physical bag 5 times, order records 5 scan actions, 4 bags may remain at store | Accepted v1 residual risk. Enforce expected-count maximum, deliberate scan cadence, final physical-count confirmation, timestamp/device/GPS evidence, rapid-scan anomaly monitoring, and honest audit terminology; migrate gradually to unique bag codes later (Section 3.4/9.1/20.2) |
 | 2 | Data integrity | Duplicate/lost scan events from offline sync retries | A flaky network causes a scan to be submitted twice, double-counting a bag as "arrived" | `client_event_id` idempotency, DB unique constraint (Section 5.3.5, 10.4) |
 | 3 | Technical | Race condition in pigeon hole allocation | Two pickers arrive simultaneously, both get assigned the same free hole | `FOR UPDATE SKIP LOCKED` transactional allocation (Section 13.2) |
 | 4 | Technical | Race condition in order assignment | Two pickers both "accept" the same offer before either syncs | Conditional UPDATE (`WHERE assigned_picker_id IS NULL`), server-authoritative resolution (Section 3.3/10.4) |
 | 5 | Operational | Sort wall reaches 100% capacity with no overflow process defined at a physical warehouse | Bags have nowhere to go; picker stuck, order stuck, no software fix possible | Overflow staging area is a **process requirement handed to Ops before launch**, not a software feature alone (Section 13.3) — flagged explicitly as a joint software+ops responsibility |
 | 6 | Operational | Delivery partner no-show with no backup configured | `READY_FOR_DISPATCH` order sits indefinitely, hole never frees, blocks capacity | Backup partner chain + auto-reassign timeout (Section 13.5); this configuration is a **launch checklist item**, not optional |
-| 7 | Human | Picker fraud — false "collected" claims, especially exploiting risk #1 | Systematic bag loss, customer complaints, financial loss | Per-bag QR (fixes the root cause) + GPS/device logging on every scan (Section 5.3.5) + exception-rate-per-picker monitoring (Section 16.1) as an ongoing detection layer even after the root cause is fixed |
+| 7 | Human | Picker fraud — false "collected" claims, especially exploiting risk #1 | Systematic bag loss, customer complaints, financial loss | GPS/device logging on every scan, scan-cadence anomaly detection, physical-count confirmation, and exception-rate-per-picker monitoring (Section 16.1). These controls reduce but cannot eliminate the shared-QR risk. |
 | 8 | Human | High picker/staff turnover leads to untrained mistakes | New picker doesn't understand the "scan every bag individually" requirement, tries to shortcut | Screen-level design enforces one obvious action at a time (Section 4), disables "Mark Done" until count matches (Section 4.2), no shortcut exists in the UI even if the user wants one |
 | 9 | Warehouse | Physical QR label damage (torn, water-damaged, faded) | Picker can't scan a legitimate bag/hole, blocks progress | Manual correction flow with mandatory reason + audit trail (Section 9.7/12.1); manual entry fallback in the scanner UI (Section 4.3) |
 | 10 | Warehouse | Pigeon hole hardware/QR failure | Hole becomes unusable mid-use, order stuck | `OUT_OF_SERVICE` state + automatic bag reallocation to a fresh hole (Section 6.3/6.4/13.6) |
@@ -1849,7 +1868,7 @@ Organized by theme, roughly in order of expected impact, without implying a fixe
 
 **Store integration ecosystem**
 - Self-serve store onboarding portal (currently an Admin-driven manual process, Section 12.4) so growth in store count doesn't bottleneck on engineering/ops time.
-- Standardized store integration SDK/webhook spec to reduce the Section 9.6 "legacy shared-QR fallback" integration debt to zero over time.
+- Standardized store integration SDK/webhook/printing spec to migrate stores gradually from `SHARED_ORDER` to `UNIQUE_BAG` QR mode (Section 9.6).
 - Real "packed and ready" signals from more sophisticated store POS integrations, closing the Section 3.1 gap fully rather than relying on a configurable buffer.
 
 **Platform & data**
@@ -1885,7 +1904,7 @@ For quick CTO reference, every place this document explicitly disagreed with or 
 
 | Section | Challenge | Severity |
 |---|---|---|
-| 3.4 / 9.1 | Shared QR code per order (not per bag) makes individual bag verification meaningless | 🔴 Launch-blocking |
+| 3.4 / 9.1 | Shared QR per order cannot prove distinct bag identity | 🟡 Accepted MVP constraint with explicit limitations and compensating controls; future migration path retained |
 | 3.1 | "Order available" conflates ingestion with true pack-readiness | 🟡 Should fix before launch, cheap to address |
 | 3.3 | No assignment algorithm defined at all in the PRD | 🟡 Needs a v1 definition (provided in Section 3.3), can start simple |
 | 3.5 / 4.5 | Single static warehouse QR is weak proof of arrival, replayable via photo | 🟢 Acceptable residual risk at launch scale, with GPS logging as a cheap first mitigation; revisit at Section 18.3 |
