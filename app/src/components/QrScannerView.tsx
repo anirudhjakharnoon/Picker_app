@@ -21,11 +21,26 @@ interface QrScannerViewProps {
 export function QrScannerView({ onDecode, paused = false, helperText }: QrScannerViewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerRef = useRef<QrScanner | null>(null);
+  const decodeLockedRef = useRef(false);
+  const onDecodeRef = useRef(onDecode);
   const [torchOn, setTorchOn] = useState(false);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualEntry, setManualEntry] = useState('');
   const [showManualEntry, setShowManualEntry] = useState(false);
+
+  onDecodeRef.current = onDecode;
+
+  const emitDecode = (value: string) => {
+    // Camera libraries can decode the same visible QR several times before
+    // React has committed the parent's `paused=true` render. With a shared
+    // order QR, those duplicate callbacks incorrectly count as additional
+    // physical bag scan actions. Lock synchronously inside the callback;
+    // unlock only when the parent explicitly resumes scanning.
+    if (decodeLockedRef.current || paused) return;
+    decodeLockedRef.current = true;
+    onDecodeRef.current(value);
+  };
 
   useEffect(() => {
     if (!videoRef.current) return;
@@ -37,7 +52,7 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
 
     const scanner = new QrScanner(
       videoRef.current,
-      (result) => onDecode(typeof result === 'string' ? result : result.data),
+      (result) => emitDecode(typeof result === 'string' ? result : result.data),
       {
         highlightScanRegion: true,
         highlightCodeOutline: true,
@@ -71,6 +86,7 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
     if (paused) {
       scannerRef.current.pause();
     } else {
+      decodeLockedRef.current = false;
       void scannerRef.current.start();
     }
   }, [paused]);
@@ -108,7 +124,7 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
           onSubmit={(e) => {
             e.preventDefault();
             if (manualEntry.trim()) {
-              onDecode(manualEntry.trim());
+              emitDecode(manualEntry.trim());
               setManualEntry('');
             }
           }}

@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
-import { useAuth } from '../auth/AuthProvider';
+import { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../auth/AuthContext';
 import { useOrders } from '../lib/useOrders';
 import { submitAction } from '../lib/actions';
+import { onSync } from '../lib/syncEngine';
 import { QrScannerView } from '../components/QrScannerView';
 import type { Order } from '../types/database';
 import { usePendingCount } from '../lib/usePendingCount';
@@ -197,9 +198,13 @@ export function PickerPage() {
     return (
       <GateScanScreen
         orderIds={readyForDropoff.map((o) => o.id)}
-        onDone={() => {
+        onDone={async () => {
+          // Warehouse arrival changes each order from `picked` to
+          // `sorting_in_progress`. Wait for the authoritative refetch before
+          // rendering the Sorting screen; otherwise its derived `inSorting`
+          // list is momentarily empty and the picker appears stuck.
+          await refetch();
           setScreen({ name: 'sorting' });
-          void refetch();
         }}
         notify={notify}
       />
@@ -339,28 +344,64 @@ function GateScanScreen({
   notify,
 }: {
   orderIds: string[];
-  onDone: () => void;
+  onDone: () => Promise<void>;
   notify: (msg: string) => void;
 }) {
   const [paused, setPaused] = useState(false);
-  const [result, setResult] = useState<{ order_id: string; pigeon_hole_number: string | null; reserved: boolean }[] | null>(null);
+  const [result, setResult] = useState<WarehouseArrivalRow[] | null>(null);
+  const [pendingLocalId, setPendingLocalId] = useState<string | null>(null);
+
+  const completeArrival = (rows: WarehouseArrivalRow[]) => {
+    setPendingLocalId(null);
+    setResult(rows);
+    const overflow = rows.filter((row) => !row.reserved);
+    if (overflow.length > 0) {
+      notify(`${overflow.length} order(s) have no free hole yet — hold those bags for staging.`);
+    } else {
+      notify('Pigeon holes assigned. Continue to sorting.');
+    }
+    window.setTimeout(() => {
+      void onDone();
+    }, 900);
+  };
+
+  useEffect(() => {
+    if (!pendingLocalId) return;
+    const unsubscribe = onSync((results) => {
+      const match = results.find((entry) => entry.action.clientEventId === pendingLocalId);
+      if (!match) return;
+      if (match.ok) {
+        completeArrival((match.data as WarehouseArrivalRow[] | null) ?? []);
+      } else if (!match.retryable) {
+        setPendingLocalId(null);
+        setPaused(false);
+        notify(`Could not record arrival: ${match.error}`);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+    // `completeArrival` intentionally reads current props/state; the only
+    // subscription identity is the stable local event id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocalId]);
 
   const handleDecode = async (value: string) => {
     if (paused) return;
     setPaused(true);
     if (!navigator.onLine) {
-      await submitAction('record_warehouse_arrival', (clientEventId) => ({
+      const { localId } = await submitAction('record_warehouse_arrival', (clientEventId) => ({
         p_client_event_id: clientEventId,
         p_gate_qr_value: value,
         p_order_ids: orderIds,
         p_client_captured_at: new Date().toISOString(),
       }));
-      notify('Offline — arrival saved, holes will be assigned once you reconnect.');
-      onDone();
+      setPendingLocalId(localId);
+      notify('Offline — arrival is saved. Stay on this screen; sorting will open after reconnection and hole assignment.');
       return;
     }
 
-    const { immediate } = await submitAction('record_warehouse_arrival', (clientEventId) => ({
+    const { immediate, localId } = await submitAction('record_warehouse_arrival', (clientEventId) => ({
       p_client_event_id: clientEventId,
       p_gate_qr_value: value,
       p_order_ids: orderIds,
@@ -368,24 +409,25 @@ function GateScanScreen({
     }));
 
     if (immediate?.ok) {
-      const rows = immediate.data as typeof result;
-      setResult(rows);
-      const overflow = rows?.filter((r) => !r.reserved) ?? [];
-      if (overflow.length > 0) {
-        notify(`${overflow.length} order(s) have no free hole yet — hold those bags for staging.`);
-      } else {
-        notify('Pigeon holes assigned.');
-      }
-      window.setTimeout(onDone, 1500);
+      completeArrival((immediate.data as WarehouseArrivalRow[] | null) ?? []);
     } else if (immediate) {
       notify(`Could not record arrival: ${immediate.error}`);
       setPaused(false);
+    } else {
+      setPendingLocalId(localId);
+      notify('Arrival is still syncing. Stay on this screen; sorting will open automatically.');
     }
   };
 
   return (
     <div className="picker-screen">
       <h2>Scan warehouse gate</h2>
+      {pendingLocalId && (
+        <div className="flow-status" role="status">
+          <span className="flow-status-spinner" aria-hidden="true" />
+          Waiting for connection and pigeon-hole assignment…
+        </div>
+      )}
       {!result && (
         <QrScannerView onDecode={handleDecode} paused={paused} helperText="Scan the QR code at the warehouse entrance." />
       )}
@@ -400,6 +442,12 @@ function GateScanScreen({
       )}
     </div>
   );
+}
+
+interface WarehouseArrivalRow {
+  order_id: string;
+  pigeon_hole_number: string | null;
+  reserved: boolean;
 }
 
 function ScanBagForSortScreen({

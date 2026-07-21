@@ -134,8 +134,16 @@ export function AdminPage() {
     <div className="admin-screen">
       {toast && <div className="toast">{toast}</div>}
 
+      <header className="panel-heading">
+        <div>
+          <span className="panel-eyebrow">Platform controls</span>
+          <h1>Admin</h1>
+          <p>Create test orders and manage the physical QR setup for this MVP.</p>
+        </div>
+      </header>
+
       {generatedCodes.length > 0 && (
-        <section>
+        <section className="generated-codes">
           <h2>Generated test codes</h2>
           <p className="hint">
             Keep this page open or copy these values. On a scanner screen, tap

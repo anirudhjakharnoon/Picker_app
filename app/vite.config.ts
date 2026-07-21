@@ -31,7 +31,7 @@ export default defineConfig({
         // to Supabase directly and are handled by the IndexedDB queue
         // (Section 10.2), not by service-worker caching, since scan
         // correctness must never depend on a cached network response.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
       },
       devOptions: {
         enabled: false,
