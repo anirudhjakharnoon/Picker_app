@@ -96,6 +96,7 @@ export interface Warehouse {
   name: string;
   address: string | null;
   status: 'active' | 'inactive';
+  gate_qr_rotation_minutes?: number;
 }
 
 export interface SortWall {
@@ -114,8 +115,28 @@ export interface PigeonHole {
   qr_code_id: string | null;
   status: PigeonHoleStatus;
   priority_reserved: boolean;
+  bag_capacity?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface QrCode {
+  id: string;
+  code_type: 'bag' | 'pigeon_hole' | 'warehouse_gate';
+  code_value: string;
+  code_version: number;
+  entity_id: string | null;
+  status: 'active' | 'revoked' | 'expired';
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface OperationsConfiguration {
+  singleton: boolean;
+  max_orders_per_picker: number;
+  bags_per_pigeon_hole: number;
+  updated_at: string;
+  updated_by_user_id: string | null;
 }
 
 export interface Notification {
@@ -174,6 +195,8 @@ export interface Database {
       warehouses: { Row: Warehouse; Insert: Partial<Warehouse>; Update: Partial<Warehouse> };
       sort_walls: { Row: SortWall; Insert: Partial<SortWall>; Update: Partial<SortWall> };
       pigeon_holes: { Row: PigeonHole; Insert: Partial<PigeonHole>; Update: Partial<PigeonHole> };
+      qr_codes: { Row: QrCode; Insert: Partial<QrCode>; Update: Partial<QrCode> };
+      operations_configuration: { Row: OperationsConfiguration; Insert: Partial<OperationsConfiguration>; Update: Partial<OperationsConfiguration> };
       notifications: { Row: Notification; Insert: Partial<Notification>; Update: Partial<Notification> };
       status_history: { Row: StatusHistoryRow; Insert: Partial<StatusHistoryRow>; Update: never };
       bag_scans: { Row: BagScanRow; Insert: Partial<BagScanRow>; Update: never };

@@ -1,6 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import type { SortWall, Warehouse } from '../types/database';
+import { useOrders } from '../lib/useOrders';
+import { QrCodePreview } from '../components/QrCodePreview';
+import { WarehouseGateQr } from '../components/WarehouseGateQr';
+import type { OperationsConfiguration, Profile, PigeonHole, SortWall, Warehouse } from '../types/database';
 
 /**
  * Minimal admin/test-data tools. There is no real Store API integration yet
@@ -16,6 +19,12 @@ export function AdminPage() {
   const [generatedCodes, setGeneratedCodes] = useState<
     { label: string; value: string }[]
   >([]);
+  const { orders, refetch: refetchOrders } = useOrders();
+  const [pickers, setPickers] = useState<Profile[]>([]);
+  const [configuration, setConfiguration] = useState<OperationsConfiguration | null>(null);
+  const [holes, setHoles] = useState<PigeonHole[]>([]);
+  const [assigningOrderId, setAssigningOrderId] = useState<string | null>(null);
+  const [resetConfirmation, setResetConfirmation] = useState('');
 
   const notify = (msg: string) => {
     setToast(msg);
@@ -23,9 +32,18 @@ export function AdminPage() {
   };
 
   const loadRefData = async () => {
-    const [w, sw] = await Promise.all([supabase.from('warehouses').select('*'), supabase.from('sort_walls').select('*')]);
+    const [w, sw, pickerRows, configRows, holeRows] = await Promise.all([
+      supabase.from('warehouses').select('*'),
+      supabase.from('sort_walls').select('*'),
+      supabase.from('profiles').select('*').eq('role', 'picker').eq('status', 'active').order('full_name'),
+      supabase.from('operations_configuration').select('*').eq('singleton', true).maybeSingle(),
+      supabase.from('pigeon_holes').select('*'),
+    ]);
     setWarehouses((w.data as unknown as Warehouse[]) ?? []);
     setSortWalls((sw.data as unknown as SortWall[]) ?? []);
+    setPickers((pickerRows.data as unknown as Profile[]) ?? []);
+    setConfiguration((configRows.data as unknown as OperationsConfiguration | null) ?? null);
+    setHoles((holeRows.data as unknown as PigeonHole[]) ?? []);
   };
 
   useEffect(() => {
@@ -156,23 +174,54 @@ export function AdminPage() {
     }
   };
 
-  const createGate = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const form = new FormData(e.currentTarget);
-    const { data, error } = await supabase.rpc('admin_create_warehouse_gate_v1', {
-      p_warehouse_id: form.get('warehouseId'),
+  const assignPicker = async (orderId: string, pickerId: string) => {
+    if (!pickerId) return;
+    setAssigningOrderId(orderId);
+    const { error } = await supabase.rpc('admin_assign_order_v1', {
+      p_order_id: orderId,
+      p_picker_id: pickerId,
     });
-    if (error) {
-      notify(`Failed: ${error.message}`);
-    } else {
-      const value = (data as { code_value: string }).code_value;
-      notify(`Gate code created: ${value}`);
-      setGeneratedCodes((current) => [
-        { label: 'Warehouse gate code', value },
-        ...current,
-      ]);
+    setAssigningOrderId(null);
+    if (error) notify(`Could not assign picker: ${error.message}`);
+    else {
+      notify('Picker assigned.');
+      void refetchOrders();
     }
   };
+
+  const saveConfiguration = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const { data, error } = await supabase.rpc('admin_update_operations_configuration_v1', {
+      p_max_orders_per_picker: Number(form.get('maxOrders')),
+      p_bags_per_pigeon_hole: Number(form.get('bagsPerHole')),
+    });
+    if (error) {
+      notify(`Could not save configuration: ${error.message}`);
+      return;
+    }
+    setConfiguration(data as OperationsConfiguration);
+    notify('Operations configuration saved. It applies to all pickers and free pigeon holes.');
+    void loadRefData();
+  };
+
+  const resetOrders = async () => {
+    const { data, error } = await supabase.rpc('admin_reset_orders_v1', {
+      p_confirmation: resetConfirmation,
+    });
+    if (error) {
+      notify(`Could not reset orders: ${error.message}`);
+      return;
+    }
+    setResetConfirmation('');
+    setGeneratedCodes([]);
+    notify(`Deleted ${data as number} test order(s). Pigeon holes have been released.`);
+    void refetchOrders();
+    void loadRefData();
+  };
+
+  const pickerById = new Map(pickers.map((picker) => [picker.id, picker]));
+  const holeById = new Map(holes.map((hole) => [hole.id, hole]));
 
   return (
     <div className="admin-screen">
@@ -195,17 +244,20 @@ export function AdminPage() {
           </p>
           {generatedCodes.map((code, index) => (
             <div className="generated-code" key={`${code.label}-${index}`}>
-              <strong>{code.label}</strong>
-              <code>{code.value}</code>
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(code.value);
-                  notify('Code copied.');
-                }}
-              >
-                Copy
-              </button>
+              <QrCodePreview value={code.value} label={code.label} />
+              <div>
+                <strong>{code.label}</strong>
+                <code>{code.value}</code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(code.value);
+                    notify('Code copied.');
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
             </div>
           ))}
         </section>
@@ -279,21 +331,86 @@ export function AdminPage() {
         </form>
       </section>
 
+      <section className="warehouse-qr-list">
+        <h2>Warehouse QR codes</h2>
+        <p className="hint">These are the actual live gate QR codes. Each code expires and refreshes every hour.</p>
+        {warehouses.map((warehouse) => <WarehouseGateQr key={warehouse.id} warehouse={warehouse} />)}
+      </section>
+
       <section>
-        <h2>Create warehouse gate code</h2>
-        <form onSubmit={createGate}>
+        <h2>Configurations</h2>
+        <p className="hint">
+          The picker limit counts active orders through drop-off. The bag capacity applies to free pigeon holes;
+          occupied holes keep their existing capacity until they are released.
+        </p>
+        <form key={configuration?.updated_at ?? 'default'} onSubmit={saveConfiguration}>
           <label>
-            Warehouse
-            <select name="warehouseId" required>
-              {warehouses.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
+            Maximum active orders per picker
+            <input name="maxOrders" type="number" min="1" required defaultValue={configuration?.max_orders_per_picker ?? 3} />
           </label>
-          <button type="submit">Create gate code</button>
+          <label>
+            Maximum bags per pigeon hole
+            <input name="bagsPerHole" type="number" min="1" required defaultValue={configuration?.bags_per_pigeon_hole ?? 5} />
+          </label>
+          <button type="submit">Save configuration</button>
         </form>
+      </section>
+
+      <section className="admin-live-orders">
+        <h2>Live orders</h2>
+        <p className="hint">Status and assignment update live. Available orders can be manually assigned to an active picker.</p>
+        {orders.length === 0 && <p className="empty-state">No orders yet.</p>}
+        {orders.map((order) => {
+          const picker = order.assigned_picker_id ? pickerById.get(order.assigned_picker_id) : null;
+          const hole = order.pigeon_hole_id ? holeById.get(order.pigeon_hole_id) : null;
+          return (
+            <div className="admin-order-row" key={order.id}>
+              <div>
+                <strong>{order.external_order_ref}</strong>
+                <span className={`state-pill state-${order.status === 'picked' ? 'picked' : order.status === 'picking_in_progress' ? 'progress' : 'ready'}`}>
+                  {adminOrderStatus(order.status)}
+                </span>
+                <p>Picker: {picker?.full_name ?? picker?.email ?? 'Unassigned'}</p>
+                <p>Pigeon hole: {hole?.hole_number ?? 'Not assigned yet'}</p>
+              </div>
+              {order.shared_bag_qr_code_id && (
+                <OrderQrPreview orderRef={order.external_order_ref} qrCodeId={order.shared_bag_qr_code_id} />
+              )}
+              {order.status === 'available' && (
+                <label className="admin-assign-picker">
+                  Assign picker
+                  <select
+                    defaultValue=""
+                    disabled={assigningOrderId === order.id}
+                    onChange={(event) => void assignPicker(order.id, event.target.value)}
+                  >
+                    <option value="" disabled>Select an active picker</option>
+                    {pickers.map((availablePicker) => (
+                      <option key={availablePicker.id} value={availablePicker.id}>
+                        {availablePicker.full_name ?? availablePicker.email} ({availablePicker.max_concurrent_orders} max)
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          );
+        })}
+      </section>
+
+      <section className="danger-zone">
+        <h2>Reset test orders</h2>
+        <p className="hint">
+          Permanently deletes every current test order, its bag scans and bag QR codes, then releases all pigeon holes.
+          Warehouses, users, walls, hole QR codes, and stores are kept.
+        </p>
+        <label>
+          Type <code>RESET ALL TEST ORDERS</code> to confirm
+          <input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} />
+        </label>
+        <button type="button" className="danger-button" disabled={resetConfirmation !== 'RESET ALL TEST ORDERS'} onClick={() => void resetOrders()}>
+          Delete all test orders
+        </button>
       </section>
 
       <p className="hint">
@@ -302,4 +419,37 @@ export function AdminPage() {
       </p>
     </div>
   );
+}
+
+function adminOrderStatus(status: string): string {
+  if (status === 'available' || status === 'assigned') return 'Pending pickup';
+  if (status === 'picking_in_progress') return 'In progress';
+  if (status === 'picked') return 'Picked up';
+  return status.replace(/_/g, ' ');
+}
+
+function OrderQrPreview({ orderRef, qrCodeId }: { orderRef: string; qrCodeId: string }) {
+  const [value, setValue] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void supabase
+      .from('qr_codes')
+      .select('code_value')
+      .eq('id', qrCodeId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setValue((data as { code_value?: string } | null)?.code_value ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [qrCodeId]);
+
+  return value ? (
+    <div className="admin-order-qr">
+      <QrCodePreview value={value} label={`Order ${orderRef}`} />
+      <small>Order QR</small>
+    </div>
+  ) : null;
 }

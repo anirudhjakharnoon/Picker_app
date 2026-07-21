@@ -3,13 +3,12 @@ import { useAuth } from '../auth/AuthContext';
 import { useOrders } from '../lib/useOrders';
 import { useStoreNames } from '../lib/useStores';
 import { submitAction } from '../lib/actions';
-import { onSync } from '../lib/syncEngine';
 import { QrScannerView } from '../components/QrScannerView';
 import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
 import { CheckIcon, PinIcon, ChevronsIcon } from '../components/icons';
 import type { Order } from '../types/database';
-import { usePendingCount } from '../lib/usePendingCount';
+import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
 
 type Screen =
   | { name: 'queue' }
@@ -38,14 +37,12 @@ function formatTime(iso: string): string {
 }
 
 export function PickerPage() {
-  const { profile, patchProfile, refreshProfile } = useAuth();
+  const { profile } = useAuth();
   const { orders, refetch } = useOrders();
   const storeNames = useStoreNames();
   const [screen, setScreen] = useState<Screen>({ name: 'queue' });
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
   const [toast, setToast] = useState<string | null>(null);
-  const [onlineToggleBusy, setOnlineToggleBusy] = useState(false);
-  const pendingCount = usePendingCount();
 
   // The handoff bar is `position: fixed`, so the scrollable content behind
   // it needs bottom padding reserved for exactly its rendered height — a
@@ -90,18 +87,16 @@ export function PickerPage() {
     [orders, profile?.id]
   );
 
-  // "Pending pickup" — unassigned offers anyone can accept, plus orders
-  // already assigned to me that I haven't started scanning yet.
+  // "Pending pickup" — unassigned offers visible for swipe-accept.
   const pendingPickup = useMemo(
-    () => [
-      ...orders.filter((o) => o.status === 'available'),
-      ...myOrders.filter((o) => o.status === 'assigned'),
-    ],
-    [orders, myOrders]
+    () => orders.filter((o) => o.status === 'available'),
+    [orders]
   );
-  // "In progress" — assigned to me, some but not all bags scanned.
+  // "In progress" starts at acceptance, not just the first scanned bag. This
+  // is the one active work item that locks the picker out of other offers
+  // until every bag is collected.
   const inProgress = useMemo(
-    () => myOrders.filter((o) => o.status === 'picking_in_progress'),
+    () => myOrders.filter((o) => ['assigned', 'picking_in_progress'].includes(o.status)),
     [myOrders]
   );
   // "Picked up" — every bag scanned, not yet dropped off at the warehouse.
@@ -119,57 +114,24 @@ export function PickerPage() {
     [myOrders]
   );
   const canHandoff = pickedUp.length > 0 && myUnfinishedCount === 0;
-  // A picker must drop off (hand over) every fully-picked order before they
-  // can go offline — they cannot "disappear" while still holding bags.
-  const hasUnhandedOrders = pickedUp.length > 0;
-
   const notify = (msg: string) => {
     setToast(msg);
     window.setTimeout(() => setToast(null), 4000);
   };
 
-  const toggleOnline = async () => {
-    const goingOnline = !profile?.is_online;
-    if (!goingOnline && hasUnhandedOrders) {
-      notify(`Drop off ${pickedUp.length} picked-up order(s) before going offline.`);
+  useEffect(() => {
+    if (inProgress.length > 0) setActiveTab('in_progress');
+  }, [inProgress.length]);
+
+  const acceptOrder = async (order: Order) => {
+    const result = await submitAction('accept_order', () => ({ p_order_id: order.id }));
+    if (!result.ok) {
+      notify(`Could not accept this order: ${result.error}`);
       return;
     }
-
-    setOnlineToggleBusy(true);
-    // Instant optimistic flip — this is exactly the toggle that used to feel
-    // slow / need a manual refresh, because the UI previously only reflected
-    // the change after the full server round trip AND a page reload.
-    patchProfile({ is_online: goingOnline });
-
-    const handle = await submitAction('set_picker_status', () => ({ p_is_online: goingOnline }));
-    setOnlineToggleBusy(false);
-    notify(goingOnline ? 'You are now online' : 'You are now offline');
-
-    const result = await handle.settled;
-    if (result && !result.ok) {
-      patchProfile({ is_online: !goingOnline }); // revert on definite rejection
-      notify(`Could not update status: ${result.error}`);
-    } else {
-      void refreshProfile();
-    }
-  };
-
-  // Tapping "Pick Order" navigates to the scanner immediately (optimistic) —
-  // accepting an open offer happens in the background so the tap never
-  // waits on a network round trip before anything visibly happens.
-  const startPicking = (order: Order) => {
+    await refetch();
+    setActiveTab('in_progress');
     setScreen({ name: 'scan-pickup', orderId: order.id });
-    if (order.status !== 'available') return;
-
-    void (async () => {
-      const handle = await submitAction('accept_order', () => ({ p_order_id: order.id }));
-      const result = await handle.settled;
-      if (result && !result.ok) {
-        notify(`Could not start this order: ${result.error}`);
-        setScreen((s) => (s.name === 'scan-pickup' && s.orderId === order.id ? { name: 'queue' } : s));
-      }
-      void refetch();
-    })();
   };
 
   const tabOrders: Record<QueueTab, Order[]> = {
@@ -186,41 +148,30 @@ export function PickerPage() {
         ref={screenRef}
         style={handoffBarHeight ? { paddingBottom: handoffBarHeight + 24 } : undefined}
       >
-        <PickerHeader
-          profile={profile}
-          busy={onlineToggleBusy}
-          onToggleOnline={() => void toggleOnline()}
-        />
+        <header className="picker-topbar">
+          <h1 className="picker-title">Pending Pickup</h1>
+        </header>
 
         {toast && <div className="toast">{toast}</div>}
 
-        {!profile?.is_online ? (
-          <div className="empty-state">
-            You&apos;re offline. Go online to see and receive orders.
-          </div>
-        ) : (
-          <>
+        <>
             <div className="filter-chips" role="tablist" aria-label="Order filters">
-              <FilterChip
+              {inProgress.length === 0 && <FilterChip
                 label={`Pending pickup${pendingPickup.length ? ` (${pendingPickup.length})` : ''}`}
                 active={activeTab === 'pending'}
                 onClick={() => setActiveTab('pending')}
-              />
+              />}
               <FilterChip
                 label={`In progress${inProgress.length ? ` (${inProgress.length})` : ''}`}
                 active={activeTab === 'in_progress'}
                 onClick={() => setActiveTab('in_progress')}
               />
-              <FilterChip
+              {inProgress.length === 0 && <FilterChip
                 label={`Picked up${pickedUp.length ? ` (${pickedUp.length})` : ''}`}
                 active={activeTab === 'picked_up'}
                 onClick={() => setActiveTab('picked_up')}
-              />
+              />}
             </div>
-
-            {pendingCount > 0 && (
-              <p className="sync-note">{pendingCount} action(s) waiting to sync</p>
-            )}
 
             {inSorting.length > 0 && (
               <button
@@ -241,7 +192,9 @@ export function PickerPage() {
                   key={o.id}
                   order={o}
                   storeName={storeNameFor(o)}
-                  onPick={() => startPicking(o)}
+                  pickerHasActiveOrder={inProgress.length > 0 || myOrders.some((order) => order.status === 'assigned')}
+                  onAccept={() => void acceptOrder(o)}
+                  onContinue={() => setScreen({ name: 'scan-pickup', orderId: o.id })}
                 />
               ))}
             </div>
@@ -253,8 +206,7 @@ export function PickerPage() {
               spot={HANDOVER_SPOT}
               onGoToHandoff={() => setScreen({ name: 'dropoff' })}
             />
-          </>
-        )}
+        </>
       </div>
     );
   }
@@ -394,34 +346,6 @@ function emptyStateFor(tab: QueueTab): string {
 // Shared presentational pieces
 // ---------------------------------------------------------------------------
 
-function PickerHeader({
-  profile,
-  busy,
-  onToggleOnline,
-}: {
-  profile: ReturnType<typeof useAuth>['profile'];
-  busy: boolean;
-  onToggleOnline: () => void;
-}) {
-  const online = profile?.is_online ?? false;
-  return (
-    <header className="picker-topbar">
-      <h1 className="picker-title">Pending Pickup</h1>
-      <button
-        type="button"
-        className={`online-toggle ${online ? 'is-online' : ''}`}
-        onClick={onToggleOnline}
-        disabled={busy}
-        aria-pressed={online}
-      >
-        {busy && <span className="button-spinner" aria-hidden="true" />}
-        {online ? 'Online' : 'Offline'}
-        <span className="online-dot">{online ? <CheckIcon /> : null}</span>
-      </button>
-    </header>
-  );
-}
-
 function FilterChip({
   label,
   active,
@@ -447,11 +371,15 @@ function FilterChip({
 function OrderCard({
   order,
   storeName,
-  onPick,
+  pickerHasActiveOrder,
+  onAccept,
+  onContinue,
 }: {
   order: Order;
   storeName: string;
-  onPick: () => void;
+  pickerHasActiveOrder: boolean;
+  onAccept: () => void;
+  onContinue: () => void;
 }) {
   const inProgress = order.status === 'picking_in_progress';
   const pickedUp = order.status === 'picked';
@@ -489,11 +417,18 @@ function OrderCard({
         )}
       </div>
 
-      {!pickedUp && (
-        <button type="button" className="pick-button" onClick={onPick}>
-          {inProgress ? 'Continue picking' : 'Pick Order'}
-        </button>
+      {order.status === 'available' && (
+        <OrderAcceptSwipe
+          disabled={pickerHasActiveOrder}
+          disabledMessage="Finish your current order before accepting another."
+          onAccepted={onAccept}
+        />
       )}
+      {order.status === 'assigned' || inProgress ? (
+        <button type="button" className="pick-button" onClick={onContinue}>
+          {inProgress ? 'Continue picking' : 'Start picking'}
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -619,24 +554,13 @@ function PickupFlow({
     const optimisticNext = Math.min(scanned + 1, expected);
     setOptimisticScanned(optimisticNext); // instant feedback, before the network call
 
-    const handle = await submitAction('scan_bag_pickup', (clientEventId) => ({
+    const result = await submitAction('scan_bag_pickup', (clientEventId) => ({
       p_client_event_id: clientEventId,
       p_order_id: order.id,
       p_qr_code_value: value,
       p_client_captured_at: new Date().toISOString(),
       p_device_id: navigator.userAgent.slice(0, 64),
     }));
-    const result = await handle.settled;
-
-    if (result === null) {
-      // Offline: keep the optimistic count; it reconciles automatically once
-      // this action syncs (the `serverScanned` effect above snaps to truth).
-      notify('Offline — bag saved, will sync automatically.');
-      setPhase(optimisticNext >= expected ? 'all-collected' : 'collected-one');
-      void refetch();
-      return;
-    }
-
     if (!result.ok) {
       setOptimisticScanned(serverScanned); // revert the optimistic bump
       notify(`Scan rejected: ${result.error}`);
@@ -747,10 +671,8 @@ function GateScanScreen({
 }) {
   const [paused, setPaused] = useState(false);
   const [result, setResult] = useState<WarehouseArrivalRow[] | null>(null);
-  const [pendingLocalId, setPendingLocalId] = useState<string | null>(null);
 
   const completeArrival = (rows: WarehouseArrivalRow[]) => {
-    setPendingLocalId(null);
     setResult(rows);
     const overflow = rows.filter((row) => !row.reserved);
     if (overflow.length > 0) {
@@ -763,45 +685,21 @@ function GateScanScreen({
     }, 900);
   };
 
-  useEffect(() => {
-    if (!pendingLocalId) return;
-    const unsubscribe = onSync((results) => {
-      const match = results.find((entry) => entry.action.clientEventId === pendingLocalId);
-      if (!match) return;
-      if (match.ok) {
-        completeArrival((match.data as WarehouseArrivalRow[] | null) ?? []);
-      } else if (!match.retryable) {
-        setPendingLocalId(null);
-        setPaused(false);
-        notify(`Could not record arrival: ${match.error}`);
-      }
-    });
-    return () => {
-      unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingLocalId]);
-
   const handleDecode = async (value: string) => {
     if (paused) return;
     setPaused(true);
 
-    const handle = await submitAction('record_warehouse_arrival', (clientEventId) => ({
+    const result = await submitAction('record_warehouse_arrival', (clientEventId) => ({
       p_client_event_id: clientEventId,
       p_gate_qr_value: value,
       p_order_ids: orderIds,
       p_client_captured_at: new Date().toISOString(),
     }));
-    const result = await handle.settled;
-
-    if (result?.ok) {
+    if (result.ok) {
       completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
-    } else if (result) {
+    } else {
       notify(`Could not record arrival: ${result.error}`);
       setPaused(false);
-    } else {
-      setPendingLocalId(handle.localId);
-      notify('Arrival saved. Stay on this screen; sorting opens after hole assignment.');
     }
   };
 
@@ -811,12 +709,6 @@ function GateScanScreen({
         <h2 className="scan-title">Scan warehouse gate</h2>
         <p className="scan-sub">Scan the QR code at the warehouse entrance to arrive</p>
       </div>
-      {pendingLocalId && (
-        <div className="flow-status" role="status">
-          <span className="flow-status-spinner" aria-hidden="true" />
-          Waiting for connection and pigeon-hole assignment…
-        </div>
-      )}
       {!result && <QrScannerView onDecode={handleDecode} paused={paused} />}
       {result && (
         <ul className="arrival-list">
@@ -847,15 +739,13 @@ function ScanBagForSortScreen({
   const handleDecode = async (value: string) => {
     if (paused) return;
     setPaused(true);
-    const handle = await submitAction('scan_bag_for_sort', (clientEventId) => ({
+    const result = await submitAction('scan_bag_for_sort', (clientEventId) => ({
       p_client_event_id: clientEventId,
       p_order_id: orderId,
       p_qr_code_value: value,
       p_client_captured_at: new Date().toISOString(),
     }));
-    const result = await handle.settled;
-
-    if (result?.ok) {
+    if (result.ok) {
       const data = result.data as { pigeon_hole_number: string | null; overflow: boolean };
       if (data.overflow || !data.pigeon_hole_number) {
         notify('No pigeon hole reserved yet — hold this bag, we will notify you.');
@@ -863,11 +753,8 @@ function ScanBagForSortScreen({
       } else {
         onHoleFound(data.pigeon_hole_number);
       }
-    } else if (result) {
-      notify(`Scan rejected: ${result.error}`);
-      setPaused(false);
     } else {
-      notify('Offline — you need connectivity to look up the pigeon hole for this bag.');
+      notify(`Scan rejected: ${result.error}`);
       setPaused(false);
     }
   };
@@ -900,23 +787,18 @@ function ScanHoleScreen({
   const handleDecode = async (value: string) => {
     if (paused) return;
     setPaused(true);
-    const handle = await submitAction('scan_pigeon_hole', (clientEventId) => ({
+    const result = await submitAction('scan_pigeon_hole', (clientEventId) => ({
       p_client_event_id: clientEventId,
       p_order_id: orderId,
       p_pigeon_hole_qr_value: value,
       p_client_captured_at: new Date().toISOString(),
     }));
-    const result = await handle.settled;
-
-    if (result?.ok) {
+    if (result.ok) {
       setSuccess(true);
       window.setTimeout(onDone, 1200);
-    } else if (result) {
+    } else {
       notify(`Scan rejected: ${result.error}`);
       setPaused(false);
-    } else {
-      notify('Offline — hole scan saved, will sync automatically.');
-      window.setTimeout(onDone, 800);
     }
   };
 
