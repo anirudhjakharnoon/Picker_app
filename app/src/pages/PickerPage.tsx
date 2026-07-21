@@ -223,6 +223,7 @@ export function PickerPage() {
           setScreen({ name: 'queue' });
         }}
         notify={notify}
+        toast={toast}
         refetch={refetch}
       />
     );
@@ -273,6 +274,7 @@ export function PickerPage() {
           setScreen({ name: 'sorting' });
         }}
         notify={notify}
+        toast={toast}
       />
     );
   }
@@ -311,6 +313,7 @@ export function PickerPage() {
           setScreen({ name: 'sorting' });
         }}
         notify={notify}
+        toast={toast}
       />
     );
   }
@@ -495,12 +498,14 @@ function PickupFlow({
   storeName,
   onClose,
   notify,
+  toast,
   refetch,
 }: {
   order: Order | undefined;
   storeName: string;
   onClose: () => void;
   notify: (msg: string) => void;
+  toast: string | null;
   refetch: () => Promise<void>;
 }) {
   const expected = order?.bag_count_expected ?? 0;
@@ -523,7 +528,7 @@ function PickupFlow({
 
   if (!order) {
     return (
-      <FullscreenSheet onClose={onClose}>
+      <FullscreenSheet onClose={onClose} toast={toast}>
         <div className="empty-state">This order is no longer available.</div>
       </FullscreenSheet>
     );
@@ -559,7 +564,7 @@ function PickupFlow({
 
   if (phase === 'scanning') {
     return (
-      <FullscreenSheet onClose={onClose}>
+      <FullscreenSheet onClose={onClose} toast={toast}>
         <div className="scan-heading fade-in">
           <p className="scan-order">Picking Order {order.external_order_ref}</p>
           <p className="scan-order">From: {storeName}</p>
@@ -579,7 +584,7 @@ function PickupFlow({
 
   if (phase === 'collected-one') {
     return (
-      <FullscreenSheet onClose={onClose}>
+      <FullscreenSheet onClose={onClose} toast={toast}>
         <div className="sheet-body center fade-in">
           <h2>You have collected Bag #{scanned}</h2>
           <p className="sheet-sub">
@@ -606,7 +611,7 @@ function PickupFlow({
 
   // all-collected
   return (
-    <FullscreenSheet onClose={onClose}>
+    <FullscreenSheet onClose={onClose} toast={toast}>
       <div className="sheet-body center fade-in">
         <h2>You have collected all the bags!</h2>
         <p className="sheet-sub">
@@ -645,11 +650,13 @@ function GateScanScreen({
   onClose,
   onDone,
   notify,
+  toast,
 }: {
   orderIds: string[];
   onClose: () => void;
   onDone: () => Promise<void>;
   notify: (msg: string) => void;
+  toast: string | null;
 }) {
   const [paused, setPaused] = useState(false);
   const [result, setResult] = useState<WarehouseArrivalRow[] | null>(null);
@@ -686,7 +693,7 @@ function GateScanScreen({
   };
 
   return (
-    <FullscreenSheet onClose={onClose}>
+    <FullscreenSheet onClose={onClose} toast={toast}>
       <div className="scan-heading fade-in">
         <h2 className="scan-title">Scan warehouse gate</h2>
         <p className="scan-sub">Scan the QR code at the warehouse entrance to arrive</p>
@@ -766,20 +773,24 @@ function SortingOrderStep({
   );
 }
 
+type HoleDropPhase = 'verify-hole' | 'hole-arrived' | 'scan-bag' | 'bag-collected' | 'complete';
+
 function DropIntoHoleFlow({
   orderId,
   holeId,
   holeNumber,
   onDone,
   notify,
+  toast,
 }: {
   orderId: string;
   holeId: string;
   holeNumber: string;
   onDone: () => Promise<void>;
   notify: (msg: string) => void;
+  toast: string | null;
 }) {
-  const [phase, setPhase] = useState<'verify-hole' | 'scan-bags' | 'complete'>('verify-hole');
+  const [phase, setPhase] = useState<HoleDropPhase>('verify-hole');
   const [paused, setPaused] = useState(false);
   const [holeQrValue, setHoleQrValue] = useState<string | null>(null);
   const [dropped, setDropped] = useState(0);
@@ -799,14 +810,14 @@ function DropIntoHoleFlow({
     }
     const step = data as { hole_id: string; hole_number: string; dropped: number; expected: number };
     if (step.hole_id !== holeId) {
-      notify('That pigeon hole is not unlocked yet.');
+      notify('Wrong pigeon hole. Scan the currently unlocked hole for this order.');
       setPaused(false);
       return;
     }
     setHoleQrValue(value);
     setDropped(step.dropped);
     setExpected(step.expected);
-    setPhase('scan-bags');
+    setPhase('hole-arrived');
     setPaused(false);
   };
 
@@ -822,51 +833,103 @@ function DropIntoHoleFlow({
       p_device_id: navigator.userAgent.slice(0, 64),
     }));
     if (!result.ok) {
-      notify(result.error === 'Wrong bag, bag does not belong to the hole'
-        ? 'Wrong bag, bag does not belong to the hole'
-        : `Scan rejected: ${result.error}`);
+      notify(
+        result.error === 'Wrong bag, bag does not belong to the hole'
+          ? 'Wrong bag, bag does not belong to the hole'
+          : `Scan rejected: ${result.error}`
+      );
       setPaused(false);
       return;
     }
     const placement = result.data as { dropped: number; expected: number; hole_complete: boolean };
     setDropped(placement.dropped);
     setExpected(placement.expected);
+    setPaused(false);
+    setPhase(placement.hole_complete ? 'complete' : 'bag-collected');
     if (placement.hole_complete) {
-      setPhase('complete');
       window.setTimeout(() => void onDone(), 1100);
-    } else {
-      setPaused(false);
     }
   };
 
-  if (phase === 'complete') {
+  if (phase === 'hole-arrived') {
     return (
-      <FullscreenSheet onClose={() => void onDone()}>
+      <FullscreenSheet onClose={() => void onDone()} toast={toast}>
         <div className="sheet-body center fade-in">
-          <div className="success-checkmark"><CheckIcon /></div>
-          <h2>Pigeon hole {holeNumber} complete</h2>
-          <p className="sheet-sub">The next pigeon hole is now unlocked.</p>
+          <div className="success-checkmark">
+            <CheckIcon />
+          </div>
+          <h2>Arrived at Pigeon Hole {holeNumber}</h2>
+          <p className="sheet-sub">Start scanning bags now</p>
+        </div>
+        <div className="sheet-footer">
+          <button type="button" className="dark-button" onClick={() => setPhase('scan-bag')}>
+            Scan Bags {dropped}/{expected}
+          </button>
         </div>
       </FullscreenSheet>
     );
   }
 
+  if (phase === 'bag-collected') {
+    const remaining = Math.max(expected - dropped, 0);
+    return (
+      <FullscreenSheet onClose={() => void onDone()} toast={toast}>
+        <div className="sheet-body center fade-in">
+          <h2>You have dropped Bag #{dropped}</h2>
+          <p className="sheet-sub">
+            This hole holds {expected} bags · <strong>{remaining}</strong> remaining, drop the next
+            bag
+          </p>
+          <BagsGrid total={expected} collected={dropped} />
+        </div>
+        <div className="sheet-footer">
+          <button type="button" className="dark-button" onClick={() => setPhase('scan-bag')}>
+            Drop next bag
+          </button>
+        </div>
+      </FullscreenSheet>
+    );
+  }
+
+  if (phase === 'complete') {
+    return (
+      <FullscreenSheet onClose={() => void onDone()} toast={toast}>
+        <div className="sheet-body center fade-in">
+          <div className="success-checkmark">
+            <CheckIcon />
+          </div>
+          <h2>Pigeon hole {holeNumber} complete</h2>
+          <p className="sheet-sub">The next pigeon hole is now unlocked.</p>
+          <BagsGrid total={expected} collected={expected} />
+        </div>
+      </FullscreenSheet>
+    );
+  }
+
+  // 'verify-hole' | 'scan-bag'
   return (
-    <FullscreenSheet onClose={() => void onDone()}>
+    <FullscreenSheet onClose={() => void onDone()} toast={toast}>
       <div className="scan-heading fade-in">
         <p className="scan-order">Head to pigeon hole: {holeNumber}</p>
-        <h2 className="scan-title">{phase === 'verify-hole' ? `Scan hole ${holeNumber}` : 'Scan bags into this hole'}</h2>
+        <h2 className="scan-title">
+          {phase === 'verify-hole' ? `Scan hole ${holeNumber}` : `Scan bag ${dropped + 1}/${expected}`}
+        </h2>
         <p className="scan-sub">
           {phase === 'verify-hole'
             ? 'First scan the pigeon hole QR to confirm you are at the right location.'
-            : `Dropped ${dropped}/${expected} bags. Scan only bags for this hole.`}
+            : 'Scan only bags allocated to this hole.'}
         </p>
+        {phase === 'scan-bag' && (
+          <p className="scan-counts">
+            <strong>{dropped}</strong> dropped · <strong>{Math.max(expected - dropped, 0)}</strong> remaining
+          </p>
+        )}
       </div>
       {/* Deliberately the SAME QrScannerView instance (no key/remount)
           across the hole-verify and bag-scan phases — only the onDecode
           callback changes. See QrScannerView's `[paused]` effect for why
           repeatedly stopping/re-requesting the camera stream between
-          phases is exactly what caused the black-screen bug. */}
+          phases caused a black-screen bug. */}
       <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} paused={paused} />
     </FullscreenSheet>
   );

@@ -1786,6 +1786,16 @@ section {
   box-shadow: 0 4px 16px rgb(20 20 22 / 25%);
 }
 
+.fullscreen-toast {
+  position: absolute;
+  top: max(0.85rem, env(safe-area-inset-top));
+  left: max(1rem, env(safe-area-inset-left));
+  right: calc(max(1rem, env(safe-area-inset-right)) + 54px + 0.6rem);
+  z-index: 2;
+  margin: 0;
+  animation: fadeIn 160ms ease-out;
+}
+
 .fullscreen-close:hover {
   background: #000000;
 }

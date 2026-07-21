@@ -13,9 +13,20 @@ import { CloseIcon } from './icons';
  */
 export function FullscreenSheet({
   onClose,
+  toast,
   children,
 }: {
   onClose?: () => void;
+  /**
+   * The shared toast message (if any), rendered as a visible banner inside
+   * this sheet. This overlay used to have no toast rendering of its own —
+   * error/status notifications (e.g. "Wrong bag, bag does not belong to the
+   * hole") were only ever rendered on the main queue screen, so they were
+   * completely invisible while any scanner screen was open. Every caller
+   * must pass its current toast value through for errors to actually be
+   * seen during scanning.
+   */
+  toast?: string | null;
   children: ReactNode;
 }) {
   useEffect(() => {
@@ -37,6 +48,11 @@ export function FullscreenSheet({
         >
           <CloseIcon />
         </button>
+      )}
+      {toast && (
+        <div className="toast fullscreen-toast" role="alert">
+          {toast}
+        </div>
       )}
       <div className="fullscreen-content">{children}</div>
     </div>
