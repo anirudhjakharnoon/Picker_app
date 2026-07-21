@@ -61,6 +61,9 @@ export interface Order {
   qr_mode: 'shared_order' | 'unique_bag';
   shared_bag_qr_code_id: string | null;
   status: OrderStatus;
+  // Optional: only present once migration 0005 has been applied. The UI reads
+  // it defensively so the app works with or without that migration.
+  is_fragile?: boolean;
   assigned_picker_id: string | null;
   warehouse_id: string | null;
   sort_wall_id: string | null;
