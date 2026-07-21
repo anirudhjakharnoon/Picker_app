@@ -58,11 +58,10 @@ Strip away the app screens and this is a **chain-of-custody tracking system for 
 
 ## 1.2 High-level explanation
 
-The platform moves a bag from a store's shelf to a delivery partner's hands via one intermediate stop (the warehouse sort wall). Three systems compose the platform:
+The platform moves a bag from a store's shelf to a delivery partner's hands via one intermediate stop (the warehouse sort wall). The MVP has only two deployable systems:
 
-1. **Picker Mobile App** — used by pickers to receive order assignments, travel to stores, scan and collect bags, travel to the warehouse, and sort bags into pigeon holes.
-2. **Sort Wall / Operations Web App** — used by warehouse staff and operations managers to monitor pigeon hole occupancy, force interventions (reassign delivery partner, free a stuck hole, reassign a picker), and see the live state of every in-flight order.
-3. **Backend Platform** — the system of record: order ingestion from Store APIs, assignment logic, state machines, QR code issuance/validation, event distribution, and integration with delivery partners.
+1. **One role-aware Progressive Web App (PWA)** — the same URL and codebase opens in Chrome and can optionally be installed to the home screen. Picker, Sort Wall, Ops, and Admin are tabs/routes in this PWA. Authentication and server-enforced permissions determine which tabs and data each user can access. Pickers use the Picker tab for assignments/scanning; warehouse roles use the Sort Wall tab for live wall operations.
+2. **Supabase backend** — hosted Postgres, Auth, Row Level Security (RLS), Realtime, Storage, database functions for transactional workflows, and Edge Functions only where a trusted server boundary is required (Store API webhooks or secrets).
 
 ```mermaid
 flowchart LR
@@ -70,27 +69,26 @@ flowchart LR
         StoreAPI[Store API]
         DP[Delivery Partner API/Ops]
     end
-    subgraph Platform["Backend Platform"]
-        Ingest[Order Ingestion Service]
-        Core[(Core DB\nOrders / Bags / Holes)]
-        Assign[Assignment Engine]
-        Events[Event Bus / Outbox]
-        Notif[Notification Service]
+    subgraph Supabase["Supabase Free Project"]
+        Edge[Edge Functions\nExternal Webhooks Only]
+        Core[(Postgres + RLS\nOrders / Bags / Holes)]
+        RPC[Postgres RPC Functions\nScans / Assignment / Hole Allocation]
+        RT[Realtime]
+        Auth[Auth]
     end
-    subgraph Clients
-        PickerApp[Picker Mobile App]
-        SortWallWeb[Sort Wall / Ops Web App]
-        AdminWeb[Admin Panel]
+    subgraph Client["Single PWA"]
+        PickerTab[Picker Tab]
+        SortWallTab[Sort Wall Tab]
+        AdminTab[Ops / Admin Tabs]
     end
 
-    StoreAPI -- order data --> Ingest --> Core
-    Core --> Assign --> PickerApp
-    PickerApp -- scans --> Core
-    Core --> Events --> Notif
-    Notif -- push/SMS --> DP
-    SortWallWeb <-- live state --> Core
-    AdminWeb <-- overrides --> Core
-    DP -- assignment ack --> Core
+    StoreAPI -- order data --> Edge --> Core
+    Auth --> Client
+    PickerTab -- Supabase client / RPC --> RPC --> Core
+    SortWallTab -- RLS reads + RPC --> Core
+    AdminTab -- privileged RPC --> Core
+    Core --> RT --> Client
+    DP -- manual status / future callback --> Edge
 ```
 
 ## 1.3 System goals
@@ -124,7 +122,7 @@ These are assumptions this design makes explicit because the PRD leaves them imp
 1. Each **Store** exposes (or will expose) an API that the platform can either poll or receive webhooks from, containing: order ID, number of shipments, number of bags, store address, floor, zone. We assume this API is **eventually consistent and occasionally unavailable** — it is a third party's system, not ours, and must be treated with the same defensive posture as any external dependency (timeouts, retries, circusuit breakers).
 2. A **bag** is the atomic physical unit that gets scanned, carried, and sorted. An **order** is a logical grouping of 1..N bags that must all travel together and land in the same pigeon hole.
 3. **One warehouse, one sort wall** is the initial physical topology (consistent with "less than 25 warehouse staff"), but the schema is designed so multi-warehouse, multi-sort-wall is additive, not a rewrite (Section 5, Section 18).
-4. Pickers use a smartphone (iOS/Android) with a working camera for QR scanning; warehouse/ops staff use a desktop/tablet browser for the Sort Wall Website.
+4. Every human actor uses the same HTTPS PWA. Pickers open it in Chrome/mobile browser or install it to the home screen; warehouse/ops staff open the same URL on desktop/tablet. Camera scanning requires browser camera permission and HTTPS.
 5. Delivery partner integration starts as **manual, ops-driven assignment** (an ops person picks a partner from a list) and evolves toward automatic API-driven assignment as partner integrations mature — see Section 1.6 and Section 13.
 6. Network connectivity is available *intermittently* everywhere pickers operate, but must never be *assumed* available at the moment a scan happens.
 
@@ -133,7 +131,7 @@ These are assumptions this design makes explicit because the PRD leaves them imp
 - **Team size and velocity.** This is an early-stage startup. The architecture must be operable by a small team (likely 2–5 engineers) without a dedicated platform/SRE function. Every infrastructure choice in Section 19 is evaluated against "can 2 engineers keep this alive at 2am."
 - **Physical hardware constraints.** Pigeon holes are a fixed, physical, expensive-to-change resource. Software must treat sort wall capacity as a hard constraint, not something that can be "scaled" the way cloud compute can.
 - **Human factors.** Warehouse staff and pickers are not the target audience for a beautifully complex app — screens must be reduced to single, obvious actions with large tap targets and minimal text, because misuse under time pressure is the single largest source of real-world data corruption in this class of system (this is a very well-documented failure mode in WMS/logistics software — see Section 21).
-- **Budget.** At 100 orders/day, spending more than a few hundred dollars/month on infrastructure is very hard to justify to a CTO or investor. The Section 19 recommendation is optimized accordingly, while explicitly noting the point at which spend should increase and why.
+- **Budget.** MVP recurring infrastructure spend is constrained to **$0**. The design uses Supabase Free plus free static PWA hosting and avoids SMS, WhatsApp, paid observability, paid maps, and a separate backend host. Free-tier quotas and inactivity policies are external constraints that must be monitored; exceeding them is a business trigger to fund the first paid tier, not a reason to compromise data integrity.
 
 ---
 
@@ -144,26 +142,26 @@ Each actor is described by: who they are, what device/interface they use, what t
 ### 2.1 Picker
 
 - **Who:** A gig or contracted worker who physically travels to stores, collects bags, and delivers them to the warehouse sort wall. Up to 50 concurrently in the initial deployment.
-- **Interface:** Picker Mobile App (iOS/Android), camera for QR scanning, GPS for location.
+- **Interface:** Picker tab in the shared PWA, opened in Chrome/mobile browser or optionally installed. Uses browser camera and geolocation APIs.
 - **Capabilities:** Toggle online/offline, receive order assignments, scan bags at store, mark order picked, travel to warehouse, scan warehouse gate QR, scan bags into pigeon holes.
 - **Failure modes to design for:** Picker goes offline mid-trip (phone dies, app crashes, tunnel/basement connectivity); picker scans the wrong bag; picker never completes a pickup (abandons the app); picker's GPS is spoofed or disabled; picker double-scans the same bag; picker is a bad actor trying to fraud (mark done without actually collecting).
 
 ### 2.2 Warehouse Staff
 
 - **Who:** On-site employees at the warehouse who physically manage the sort wall — placing/removing bags, doing manual corrections, assisting delivery partners. Up to 25 in initial deployment.
-- **Interface:** Sort Wall / Operations Web App (likely a shared warehouse tablet or desktop, possibly also picker-app-like scanning capability for handling exceptions).
+- **Interface:** Sort Wall tab in the same PWA, normally on a shared warehouse tablet/desktop; visibility and actions are role-controlled.
 - **Capabilities:** View live pigeon hole occupancy, manually mark a bag as arrived/missing (exception handling), assist delivery partner pickup, flag a pigeon hole out-of-service.
 - **Failure modes:** Staff misreads a hole number; staff performs a correction without understanding downstream effects; shift handover loses context on an in-progress exception.
 
 ### 2.3 Sort Wall (physical + logical system)
 
-- **What:** Not a human actor, but a first-class system entity: a numbered grid of pigeon holes, each with a QR code, each capable of holding exactly one order's bags at a time. Logically, "the Sort Wall" is also the name given informally to the web app in the PRD, but this document separates the **physical Sort Wall** (Section 13) from the **Sort Wall Website** (an interface used by Operations Manager / Warehouse Staff, not a distinct actor).
+- **What:** Not a human actor, but a first-class system entity: a numbered grid of pigeon holes, each with a QR code, each capable of holding exactly one order's bags at a time. This document separates the **physical Sort Wall** (Section 13) from the **Sort Wall tab** in the shared PWA.
 - **Behavior:** Purely reactive — it does not "act," but its state (free/reserved/filled/blocked) drives almost every downstream decision (assignment, dispatch, exceptions).
 
 ### 2.4 Operations Manager
 
 - **Who:** Supervises multiple warehouse staff and pickers; the "break glass" actor for the whole system. Likely 1–3 people initially, could be one person wearing multiple hats at 100 orders/day.
-- **Interface:** Admin Panel + Sort Wall Website with elevated permissions.
+- **Interface:** Sort Wall, Exceptions, and Ops/Admin tabs in the shared PWA, exposed by role.
 - **Capabilities:** Everything Warehouse Staff can do, plus: force-assign delivery partners, reassign pickers, view cross-warehouse dashboards, view audit logs, manage users, override any state transition with a logged reason.
 - **Failure modes:** Single point of accountability — if this role doesn't exist or isn't staffed 24/7, exceptions pile up unresolved (Section 21 risk).
 
@@ -189,7 +187,7 @@ Each actor is described by: who they are, what device/interface they use, what t
 ### 2.8 Admin
 
 - **Who:** Platform administrators — typically founding engineers or a designated platform owner in the early stage, evolving into a dedicated internal-tools/ops-tech role at scale.
-- **Interface:** Admin Panel (Section 12).
+- **Interface:** Admin tabs in the shared PWA (Section 12), plus the Supabase Dashboard for bootstrap-only identity/platform operations.
 - **Capabilities:** Superset of Operations Manager — manage warehouses, sort walls, pigeon hole layout, users and roles, store integrations/API keys, QR code lifecycle, global configuration.
 
 ### 2.9 External Systems (summary)
@@ -197,11 +195,10 @@ Each actor is described by: who they are, what device/interface they use, what t
 | System | Direction | Purpose |
 |---|---|---|
 | Store API | Inbound | Order & bag metadata |
-| Delivery Partner API/Ops | Outbound + Inbound | Assignment + status callbacks |
-| Push Notification Provider (FCM/APNs) | Outbound | Picker/staff push notifications |
-| SMS/WhatsApp Provider | Outbound | Escalations, delivery partner notification fallback |
-| Object Storage (QR image assets, audit exports) | Bidirectional | Static asset storage |
-| Observability stack | Outbound (from us) | Logs, metrics, traces, alerts |
+| Delivery Partner / Ops | Manual in MVP; future API | Ops contacts partner manually and records status |
+| Supabase | Bidirectional | Database, Auth, RPC, Realtime, optional Storage/Edge Functions |
+| Cloudflare Pages | Outbound deployment | Static PWA hosting |
+| Paid push/SMS/WhatsApp providers | Future only | Explicitly absent from $0 MVP |
 
 ---
 
@@ -218,7 +215,7 @@ sequenceDiagram
     participant Assign as Assignment Engine
     participant Picker as Picker App
     participant Wall as Sort Wall
-    participant Ops as Ops / Sort Wall Website
+    participant Ops as Ops / Sort Wall Tab
     participant DP as Delivery Partner
 
     Store->>Ingest: Order packed, order data (id, bags, address, floor, zone)
@@ -274,7 +271,7 @@ sequenceDiagram
 Recommended v1 algorithm (deliberately simple, upgradeable — see Section 18):
 
 1. When an order becomes `AVAILABLE`, the Assignment Engine finds eligible **online** pickers, filtered by store zone (if the picker app records a "home zone" or last-known GPS near the store).
-2. Offer the order to the single best-ranked picker (rank = proximity, then current load — pickers already carrying orders get lower priority up to a max concurrent-order cap) via push notification with a short accept window (e.g., 45 seconds).
+2. Offer the order to the single best-ranked picker (rank = proximity, then current load) through an in-app Realtime update with a short accept window while the PWA is open. In the fastest MVP, Ops can manually assign instead, avoiding any dependency on off-app push.
 3. If not accepted in time, or explicitly declined, offer to the next-ranked picker. After N rounds with no acceptance, escalate to Ops dashboard as "unassigned — needs manual dispatch."
 4. A picker may be assigned multiple orders in one trip (batching), up to a configurable max (e.g., 3), if those orders are from the same store or nearby stores — this matches the PRD's Stage 2 wording "all the orders assigned to them," implying multi-order carrying is expected.
 
@@ -353,9 +350,30 @@ Recommended v1 algorithm (deliberately simple, upgradeable — see Section 18):
 
 # 4. Screen-by-Screen Product Specification
 
-This section documents every screen implied by the attached PRD mockups (Picker App Stage 1 & 2, plus the Sort Wall Website described only in prose) to the level of detail an engineer needs to build it without follow-up questions, and a QA engineer needs to test it without guessing.
+This section documents every screen implied by the attached PRD mockups. These are not separate applications: Picker, Sort Wall, Ops, and Admin are role-gated tabs/routes in one responsive PWA. A Picker login lands on and can access only the Picker experience; warehouse/ops logins land on the Sort Wall experience; Admin tabs appear only for permitted roles.
 
-## 4.1 Picker App — Home / Order Queue (Stage 1, Screen 1)
+## 4.0 Shared PWA Shell and Login
+
+**Purpose:** Provide one URL, login flow, installation surface, navigation shell, and offline indicator for every role.
+
+**Displayed information:** Product identity; email/password login form; post-login tab bar/sidebar assembled from the authenticated user's server-side role (`Picker`, `Sort Wall`, `Exceptions`, `Admin` as permitted); install-PWA prompt when supported; connectivity and pending-sync indicators.
+
+**Permissions:** Hiding a tab is only a UX behavior. Supabase RLS and transactional RPC authorization independently deny unauthorized reads/writes even if a user manually enters another route URL or calls Supabase directly. Picker users can access only their assignments and picker workflow; warehouse staff can access only their warehouse and Sort Wall operations; Ops/Admin receive progressively broader tabs.
+
+| Route/tab | Roles | Default landing behavior |
+|---|---|---|
+| `/picker` | `PICKER` (and Admin only for support impersonation if explicitly built later) | Picker account lands here |
+| `/sort-wall` | `WAREHOUSE_STAFF`, `OPS_MANAGER`, `ADMIN` | Warehouse staff lands here |
+| `/exceptions` | `OPS_MANAGER`, `ADMIN` | Ops Manager lands here when unresolved exceptions exist |
+| `/admin` | `ADMIN` | Admin-only configuration/oversight |
+
+Use separate accounts/logins for Picker and Sort Wall roles even if one person temporarily performs both jobs; this keeps the audit actor unambiguous. If multi-role users become necessary later, add an explicit role-switcher and audit the active role rather than sharing credentials.
+
+**Free-tier authentication choice:** Use Supabase email/password accounts provisioned by an Admin for all roles. Phone OTP/SMS is excluded from the free-only MVP because SMS delivery is not free. Password reset uses Supabase's included email capability within its current free-plan limits; if those limits are insufficient, Admin-assisted account reset is the temporary fallback.
+
+**PWA behavior:** The service worker caches the application shell and immutable assets. Installation is optional: the same app remains fully usable as a normal HTTPS website in Chrome. Camera/geolocation access is requested only when a relevant Picker screen needs it, not at login.
+
+## 4.1 PWA Picker Tab — Home / Order Queue (Stage 1, Screen 1)
 
 **Purpose:** Let the picker go online/offline and see orders offered/assigned to them.
 
@@ -379,7 +397,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** N/A (no form input on this screen beyond the toggle).
 
-## 4.2 Picker App — Order Detail / Pick Order (Stage 1, Screen 2)
+## 4.2 PWA Picker Tab — Order Detail / Pick Order (Stage 1, Screen 2)
 
 **Purpose:** Show full order context and start the picking session.
 
@@ -399,7 +417,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** None beyond the bag-count gate.
 
-## 4.3 Picker App — Bag QR Scanner (Stage 1, Screens 3–4)
+## 4.3 PWA Picker Tab — Bag QR Scanner (Stage 1, Screens 3–4)
 
 **Purpose:** Scan each bag's QR to record pickup.
 
@@ -419,7 +437,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** QR payload format validated client-side first (fast-fail on obviously malformed codes) and authoritatively server-side on sync (client validation is a UX optimization, never a security boundary).
 
-## 4.4 Picker App — Go to Dropoff (Stage 1, Screen 5)
+## 4.4 PWA Picker Tab — Go to Dropoff (Stage 1, Screen 5)
 
 **Purpose:** Explicit transition moment between "picking" and "heading to warehouse," matching the PRD's slider mockup.
 
@@ -435,7 +453,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** Slider only appears/activates once at least one full order has reached M/M scanned.
 
-## 4.5 Picker App — Warehouse Arrival QR Scan (Stage 1, Screen 6)
+## 4.5 PWA Picker Tab — Warehouse Arrival QR Scan (Stage 1, Screen 6)
 
 **Purpose:** Prove physical arrival at the warehouse before unlocking the sorting flow (see Section 3.5's PRD challenge on scan-spoofing).
 
@@ -453,7 +471,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** N/A beyond code recognition.
 
-## 4.6 Picker App — Scan Bag → Pigeon Hole Assignment (Stage 2, Screens 7 & 9)
+## 4.6 PWA Picker Tab — Scan Bag → Pigeon Hole Assignment (Stage 2, Screens 7 & 9)
 
 **Purpose:** Scan a bag and be told exactly which pigeon hole it goes to.
 
@@ -471,7 +489,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** N/A beyond scan recognition.
 
-## 4.7 Picker App — Pigeon Hole QR Scan (Stage 2, Screens 8, 11)
+## 4.7 PWA Picker Tab — Pigeon Hole QR Scan (Stage 2, Screens 8, 11)
 
 **Purpose:** Confirm physical placement of the bag into the correct hole.
 
@@ -489,7 +507,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** Scanned hole ID must match the reservation associated with the just-scanned bag; mismatches are rejected both client-side (fast feedback) and server-side (authoritative).
 
-## 4.8 Picker App — Sort Success / Confirmation (Stage 2, Screen 10)
+## 4.8 PWA Picker Tab — Sort Success / Confirmation (Stage 2, Screen 10)
 
 **Purpose:** Positive confirmation that a bag was successfully placed, matching the PRD's green-checkmark success mockup.
 
@@ -505,7 +523,7 @@ This section documents every screen implied by the attached PRD mockups (Picker 
 
 **Validation:** N/A.
 
-## 4.9 Sort Wall Website — Live Wall Dashboard
+## 4.9 PWA Sort Wall Tab — Live Wall Dashboard
 
 *(Not shown as a mockup in the PRD, described only in prose: "The website keeps track of which pigeon hole is assigned to which order, how many bags are pending to arrive in each pigeon hole, and force assign delivery partner options." This design specifies the screen fully since it's load-bearing for warehouse operations.)*
 
@@ -686,15 +704,16 @@ Base identity table shared by every human actor (picker, warehouse staff, ops ma
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` (PK) | |
-| `phone_number` | `varchar(20)` (nullable, unique) | Primary login for pickers/staff (OTP) |
-| `email` | `varchar(255)` (nullable, unique) | Primary login for admins/ops |
-| `password_hash` | `varchar(255)` (nullable) | Only for email/password actors; bcrypt/argon2 |
+| `auth_user_id` | `uuid` (unique, FK → auth.users.id) | Supabase Auth identity; authorization joins from `auth.uid()` to this row |
+| `phone_number` | `varchar(20)` (nullable, unique) | Optional contact data; not used for free-MVP login |
+| `email` | `varchar(255)` (unique) | Login identifier for all roles |
+| `password_hash` | — | **Not stored in this application table**; Supabase Auth owns password hashing/session management |
 | `full_name` | `varchar(255)` | |
 | `role` | `enum('PICKER','WAREHOUSE_STAFF','OPS_MANAGER','ADMIN')` | Primary role; see Section 11 for full RBAC |
 | `status` | `enum('ACTIVE','SUSPENDED','OFFBOARDED')` | |
 | `created_at`, `updated_at`, `last_login_at` | `timestamptz` | |
 
-- **PK:** `id`. **Unique:** `phone_number`, `email` (partial unique, allowing either to be null but not both).
+- **PK:** `id`. **Unique:** `auth_user_id`, `email`; optional unique `phone_number`.
 - **Example row:** `id=..., phone_number="+9198XXXXXXXX", full_name="Ravi Kumar", role=PICKER, status=ACTIVE`
 
 ### 5.3.7 `pickers`
@@ -865,7 +884,7 @@ The outbox/event-log table underpinning the event-driven architecture (Section 8
 | `published_at` | `timestamptz` (nullable) | Null until successfully handed to the message bus/consumers |
 | `created_at` | `timestamptz` | |
 
-- **Indexes:** `(published_at) WHERE published_at IS NULL` (the exact predicate the outbox publisher polls on), `aggregate_id`.
+- **Indexes:** `aggregate_id`; future `(published_at) WHERE published_at IS NULL` when an outbox publisher is introduced.
 
 ### 5.3.20 `audit_logs`
 
@@ -889,17 +908,17 @@ Distinct from `status_history`: this table captures **admin/ops actions on the s
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` (PK) | |
-| `recipient_user_id` | `uuid` (FK → users.id, nullable) | Null for external recipients (e.g., delivery partner SMS to a phone not in `users`) |
+| `recipient_user_id` | `uuid` (FK → users.id, nullable) | Required for free-MVP in-app notifications; nullable only for future external channels |
 | `recipient_external_ref` | `varchar(255)` (nullable) | |
-| `channel` | `enum('PUSH','SMS','WHATSAPP','EMAIL')` | |
+| `channel` | `enum('IN_APP','WEB_PUSH','SMS','WHATSAPP','EMAIL')` | `IN_APP` is the free-MVP default |
 | `template` | `varchar(128)` | |
 | `payload` | `jsonb` | |
-| `status` | `enum('QUEUED','SENT','DELIVERED','FAILED')` | |
+| `status` | `enum('QUEUED','SENT','DELIVERED','FAILED','READ')` | |
 | `retry_count` | `smallint` default `0` | |
-| `sent_at`, `delivered_at` | `timestamptz` (nullable) | |
+| `sent_at`, `delivered_at`, `read_at` | `timestamptz` (nullable) | |
 | `created_at` | `timestamptz` | |
 
-- **Indexes:** `(status) WHERE status IN ('QUEUED','FAILED')` (retry worker's hot query), `recipient_user_id`.
+- **Indexes:** `(recipient_user_id, read_at) WHERE read_at IS NULL` for the in-app inbox; future `(status) WHERE status IN ('QUEUED','FAILED')` for paid provider workers.
 
 ### 5.3.22 `idempotency_keys`
 
@@ -1078,10 +1097,24 @@ This client-side state machine is a **UX convenience derived from server state**
 
 # 7. API Design
 
+## 7.0 Free-MVP Supabase implementation mapping
+
+The REST contracts below describe stable domain operations, not a requirement to deploy a separate API server. For the free/fast MVP:
+
+| Operation class | Supabase implementation |
+|---|---|
+| Auth and authorized reads | Supabase JS client → Auth/PostgREST with RLS |
+| Critical multi-table mutations (accept assignment, scan, reserve hole, override) | Postgres RPC functions invoked with `supabase.rpc(...)`; functions perform validation, row locking, state update, history, and outbox insert in one transaction |
+| Store/delivery-partner inbound webhooks | Supabase Edge Functions, because API secrets/service-role access must never be exposed to the PWA |
+| Live Sort Wall changes | Supabase Realtime subscriptions, with periodic refetch as recovery |
+| Static PWA | Free Cloudflare Pages hosting |
+
+The PWA receives only the public Supabase project URL (`https://aetrwtubfifljkxwocpy.supabase.co`) and public anon/publishable key. The Supabase service-role key is never shipped to the browser. RLS must be enabled and tested on every exposed table before any real account is created.
+
 ## 7.1 Conventions (apply to every endpoint below)
 
-- **Style:** REST over HTTPS, JSON bodies. GraphQL was considered and rejected for v1 — see Section 19 rationale; the access patterns here are simple and well-known upfront, and REST's cacheability/simplicity/tooling maturity wins for a small team.
-- **Base path:** `/api/v1/...` — version in the URL path so breaking changes never silently affect the picker app already installed on 50 phones in the field (a versioned mobile client is far harder to force-upgrade than a web app).
+- **Style:** Supabase PostgREST/RPC over HTTPS with JSON. The `/api/v1/...` names below are conceptual external contracts and future migration targets; browser calls use table/RPC names in the MVP.
+- **Versioning:** Version critical RPC names (`scan_bag_v1`, `reserve_holes_v1`) when changing their contract. A PWA updates centrally on reload, but an already-open cached tab may run older code, so server operations still require backward-compatible versioning.
 - **Auth:** `Authorization: Bearer <JWT>` (Section 11). Store/Delivery-Partner-to-platform calls use `X-Api-Key` instead.
 - **Idempotency:** Any endpoint that creates or mutates physical/business state accepts an `Idempotency-Key` header; the server persists it in `idempotency_keys` (Section 5.3.22) and replays the original response for a retried request with the same key. Domain-specific idempotency for scans additionally uses `client_event_id` in the body (Section 5.3.5) — belt-and-suspenders, because scans are the highest-consequence writes in the system.
 - **Pagination:** Cursor-based (`?cursor=<opaque>&limit=50`), never offset-based, for any list endpoint that can grow (orders, scans, events) — offset pagination silently produces incorrect results under concurrent writes (skipped or duplicated rows), which is unacceptable for anything feeding an audit view.
@@ -1096,11 +1129,11 @@ This client-side state machine is a **UX convenience derived from server state**
   }
   ```
   `code` is a stable machine-readable string (used by client logic and analytics); `message` is human-readable (safe to show in-app); HTTP status communicates the general class (400 validation, 401/403 auth, 404 not found, 409 conflict/invalid transition, 429 rate limit, 5xx server).
-- **Rate limiting:** Per-API-key (stores, delivery partners) and per-user (pickers/staff) token-bucket limits (Section 17.6), with generous limits for scan endpoints specifically (a burst of scans in a few seconds is completely normal picker behavior, not abuse).
+- **Rate limiting:** Rely on Supabase platform/Auth limits for the internal MVP. Secret-bearing public Edge Functions validate a scoped API key and apply a simple per-key fixed-window throttle if exposed beyond trusted partners. A dedicated distributed token bucket is deferred.
 
 ## 7.2 Store Ingestion API
 
-### `POST /api/v1/stores/{storeId}/orders`
+### `POST /functions/v1/store-order-webhook` (logical future alias: `/api/v1/stores/{storeId}/orders`)
 Receives a new/updated order from a store's system (webhook push model).
 
 - **Auth:** `X-Api-Key` scoped to the store.
@@ -1137,26 +1170,26 @@ Corrects order metadata **before** the first bag scan only (Section 3.2 edge cas
 ### `POST /api/v1/stores/{storeId}/orders/{externalOrderRef}/cancel`
 - **Response `200 OK`** with updated order status; triggers picker notification if already assigned (Section 3.2).
 
-## 7.3 Picker App API
+## 7.3 PWA Picker Tab Operations
 
-### `POST /api/v1/pickers/me/status`
+### `rpc/set_picker_status_v1` (logical future alias: `POST /api/v1/pickers/me/status`)
 Toggle online/offline.
 - **Request:** `{ "is_online": true, "lat": 19.07, "lng": 72.87 }`
 - **Response `200 OK`:** `{ "is_online": true }`
 - **Errors:** `403 LOCATION_REQUIRED` if location permission missing and the deployment config requires it to go online.
 
-### `GET /api/v1/pickers/me/assignments`
+### RLS query / `rpc/get_my_assignments_v1` (logical future alias: `GET /api/v1/pickers/me/assignments`)
 Returns current/active assignments (used both live and as the "last known state" source cached for offline use, Section 10).
 - **Pagination:** N/A (bounded by `max_concurrent_orders`, small enough to never paginate).
 - **Response:** Array of orders with full detail (address, bags with QR values already resolved for offline scan-matching, current status).
 
-### `POST /api/v1/pickers/me/assignments/{assignmentId}/accept`
+### `rpc/accept_assignment_v1` (logical future alias: `POST /api/v1/pickers/me/assignments/{assignmentId}/accept`)
 - **Idempotency:** Standard `Idempotency-Key` header; concurrent accepts from the same picker on flaky retries must not double-count.
 - **Errors:** `409 ALREADY_ASSIGNED` (another picker won the race, Section 3.3); `410 OFFER_EXPIRED`.
 
-### `POST /api/v1/pickers/me/assignments/{assignmentId}/decline`
+### `rpc/decline_assignment_v1`
 
-### `POST /api/v1/orders/{orderId}/bags/scan`
+### `rpc/scan_bag_v1` (logical future alias: `POST /api/v1/orders/{orderId}/bags/scan`)
 The single most important endpoint in the system.
 - **Request:**
   ```json
@@ -1181,7 +1214,7 @@ The single most important endpoint in the system.
 - **Errors:** `409 EXPECTED_BAG_COUNT_REACHED`; `409 QR_BELONGS_TO_DIFFERENT_ORDER`; `404 QR_NOT_RECOGNIZED`; `409 INVALID_STATE_TRANSITION` (e.g., scanning for an order already `CANCELLED`).
 - **This endpoint doubles for `SORT`-type scans** with `scan_type: "SORT"` and an additional `pigeon_hole_qr_value` field — kept as one endpoint rather than two because the client-side offline queue (Section 10) benefits from a single scan-submission code path regardless of scan type; the server dispatches internally based on `scan_type`.
 
-### `POST /api/v1/pickers/me/warehouse-arrival`
+### `rpc/record_warehouse_arrival_v1`
 - **Request:** `{ "client_event_id": "...", "gate_qr_value": "WH-1-GATE-...", "client_captured_at": "...", "gps_lat":..., "gps_lng":... }`
 - **Response `200 OK`:**
   ```json
@@ -1248,17 +1281,17 @@ The PRD's example — bag scanned → update bag status → update order progres
 1. **Synchronous fan-out inside the request handler** — the scan endpoint directly calls "update dashboard," "send notification," etc., in one function.
 2. **Asynchronous fan-out via an event log** — the scan endpoint only writes the fact + an `events` row; independent consumers react to the event later.
 
-**Recommendation: asynchronous fan-out from day one, implemented via the transactional outbox pattern on Postgres (Section 5.3.19), *not* a separate message broker like Kafka/RabbitMQ/SNS at this stage.** Rationale:
+**Recommendation: keep durable domain events from day one, but do not run a separate publisher service in the free MVP.** Postgres RPC functions synchronously complete all correctness-critical database effects in one transaction, write an `events` outbox row for future use/audit, and Supabase Realtime propagates committed table changes to open PWA clients.
 
-- Synchronous fan-out means the scan endpoint's latency (and reliability) is the sum of every downstream side effect's latency/reliability. A picker standing in a store with poor signal should never have their scan request hang because the notification provider is slow — this alone rules out option 1.
-- A dedicated message broker is the *conceptually* right long-term answer, but it is also new infrastructure to operate, monitor, and reason about failure modes for, at a moment (100 orders/day) when the team's velocity matters far more than the theoretical scalability a broker buys. The **transactional outbox pattern** gets 90% of the benefit (decoupled, reliable, at-least-once fan-out) using infrastructure the team already has (Postgres) and already needs to operate.
+- Correctness-critical effects (e.g., scan + logical slot + status history + order progress) belong in one Postgres transaction and do not depend on any asynchronous worker.
+- Paid/external side effects are intentionally absent in the free MVP. This avoids keeping a scan request open on a notification provider and avoids paying for/running a worker.
 - Critically, this is **not a dead end** — Section 18 describes the exact, low-drama migration path from "outbox table + polling publisher" to "real broker" once volume justifies it, and because the *event schema and consumer interfaces* are broker-agnostic from day one, that migration touches infrastructure, not business logic.
 
 ## 8.2 Mechanism (v1)
 
 1. Any state-changing operation writes its primary data change **and** one or more `events` rows in the **same database transaction** (this atomicity guarantee is the entire point of the outbox pattern — it is impossible for the state to change without the corresponding event being durably recorded, and vice versa).
-2. A lightweight background **Outbox Publisher** process polls `SELECT * FROM events WHERE published_at IS NULL ORDER BY id LIMIT 100` on a short interval (e.g., every 500ms–1s), publishes each to in-process subscriber handlers (or, once volume justifies it, to a real broker topic), and marks `published_at`.
-3. Consumers are simple functions registered against `event_type` strings — e.g., `order.ready_for_dispatch` triggers both "notify ops dashboard via WebSocket/SSE" and "attempt auto delivery-partner assignment," as two independent, isolated handlers (one handler's failure/exception must never block or affect another's).
+2. Open PWA clients subscribe to authorized order/hole changes through Supabase Realtime and refetch the canonical row after receiving a change.
+3. Manual Ops workflows replace automatic external consumers initially. When funding/volume justifies workers, the existing outbox can feed Edge Functions, a small worker, or a broker without changing transaction semantics.
 
 ## 8.3 Canonical event catalogue (v1)
 
@@ -1266,25 +1299,25 @@ The PRD's example — bag scanned → update bag status → update order progres
 |---|---|---|
 | `order.ingested` | New order created from Store API | Ops dashboard feed |
 | `order.available` | Order ready for assignment | Assignment Engine |
-| `order.assigned` | Picker accepts | Push notification to picker; dashboard update |
+| `order.assigned` | Picker accepts | Realtime/in-app update |
 | `order.bag_scanned` | Any successful scan (pickup or sort) | Order progress recalculation; picker UI live update (if online); dashboard update |
 | `order.picked` | All bags scanned at store | Dashboard update |
 | `order.arrived_at_warehouse` | Gate QR scanned | Pigeon hole reservation trigger |
 | `order.pigeon_hole_filled` | Last bag sorted | Order → `READY_FOR_DISPATCH`; Ops dashboard alert; auto-assignment attempt |
-| `order.delivery_assigned` | Partner assigned | Notify partner (push/SMS/webhook); dashboard update |
+| `order.delivery_assigned` | Partner assigned | In-app dashboard update; Ops contacts partner manually in free MVP |
 | `order.dispatched` | Partner collects | Free hole; dashboard update; reporting pipeline |
-| `order.exception_raised` | Any `EXCEPTION_*` transition | Ops alert (push + dashboard badge), Section 14 escalation timer starts |
+| `order.exception_raised` | Any `EXCEPTION_*` transition | Durable in-app alert + dashboard badge; manual escalation timer starts |
 | `pigeon_hole.out_of_service` | Staff/ops flags hardware | Ops alert; triggers reallocation for any active reservation |
 
-## 8.4 Delivering events to live UIs (dashboard, picker app)
+## 8.4 Delivering events to PWA tabs
 
-- **Sort Wall Website / Admin dashboard:** Server-Sent Events (SSE) or WebSocket subscription per warehouse, fed directly by the same event consumers described above (a consumer pushes the relevant delta to any connected dashboard clients for that warehouse). SSE is preferred over WebSocket for this specific use case if the traffic is purely server-to-client (dashboard doesn't need to send much back) — simpler infrastructure, works through more corporate/warehouse network setups, trivially reconnects.
-- **Picker App:** Push notifications (FCM/APNs) for anything requiring picker attention when the app is backgrounded (new offer, order cancelled mid-trip); in-foreground live updates via a lightweight poll (e.g., every 15–30s) rather than a persistent socket, because pickers' connectivity is intermittent enough that a persistent-connection assumption (WebSocket) would spend more engineering effort on reconnection/backoff logic than a simple poll costs in latency for this use case. This is a deliberate simplicity-over-elegance choice appropriate to the constraint in Section 1.6.
+- **All tabs in the PWA:** Supabase Realtime subscriptions scoped by RLS/warehouse. On reconnect, tab visibility change, and every 30–60 seconds, refetch canonical state; Realtime is an acceleration mechanism, not the source of truth.
+- **Backgrounded/closed PWA:** no guaranteed free notification path. New assignments and exceptions become visible on reopen/refetch. Optional Web Push can be added where supported, but Section 10.6's platform limitations apply.
 
 ## 8.5 Guarantees and what they explicitly do *not* cover
 
-- **At-least-once delivery, not exactly-once.** Every consumer handler must be idempotent (e.g., "send push notification for order X's new assignment" keyed so a duplicate publish doesn't double-notify the picker with two identical pushes — Section 14 notification dedup keys).
-- **Ordering is guaranteed per-aggregate, not globally.** Events for the same `order_id` are published in the order they were created (single-threaded outbox publisher, or partitioned-by-aggregate-id if scaled out later); events across different orders have no ordering guarantee relative to each other, which is fine because no consumer logic in this system depends on cross-order ordering.
+- **Realtime delivery is best-effort.** Clients can miss or duplicate change notifications, so every message triggers an idempotent refetch and periodic reconciliation.
+- **Event ordering is represented by database sequence/timestamps per aggregate.** Clients do not infer business state by applying messages blindly; they read current canonical state.
 - **This is not a data-warehouse/analytics pipeline.** `events` is operational, not a permanent analytical log — retained long enough for replay/debugging (e.g., 30–90 days) then archived, distinct from `status_history`/`bag_scans`/`audit_logs`, which are retained indefinitely as the permanent business record (Section 15).
 
 ---
@@ -1363,13 +1396,13 @@ Section 1.3 already states this as a primary goal — restating the "why" concre
 
 ## 10.2 Local storage design
 
-- **On-device store:** an embedded SQLite database (via a lightweight ORM appropriate to the chosen mobile framework — Section 19) mirroring the minimal server schema needed offline: current assignments, their orders/bags/QR values, and a durable **outbound action queue**.
+- **Browser store:** IndexedDB (via a small wrapper such as Dexie) stores current assignments, expected counts/QR values, and the durable outbound action queue. A PWA cannot rely on native SQLite without adding a heavier WebAssembly layer; IndexedDB is the browser-native, fastest-to-build option.
 - **What gets cached proactively, and when:** the moment an order is assigned, its expected bag count, shared order-level QR value, QR mode, and logical bag slots are cached before they are needed. Scanning must never require a network call to know "does this code belong to this order"; local validation and count progression work offline.
 - **Outbound queue:** every user action that needs server durability (scan, accept/decline assignment, online/offline toggle, report-issue) is written to a local `pending_actions` table **immediately**, before any network attempt, with the exact request payload (including its `client_event_id`/`Idempotency-Key`) already generated client-side. The in-app UI reflects the *local, optimistic* result of the action instantly; network sync is a background concern the picker is only peripherally aware of (a small, unobtrusive sync-status indicator, never a blocking spinner on the primary action).
 
 ## 10.3 Retry and sync
 
-- A background sync worker (runs on a timer, on connectivity-change events, and on app foreground) drains `pending_actions` in **creation order**, submitting each to its corresponding API endpoint with its original `Idempotency-Key`/`client_event_id`.
+- A sync worker in the PWA drains `pending_actions` on app start, app foreground/visibility change, `online` events, and a timer while the page is open. Browser Background Sync may be used as a bonus where supported, but correctness must not depend on it: iOS and some browsers restrict or omit background execution.
 - **Retry policy:** exponential backoff with jitter (e.g., 2s, 4s, 8s, 16s, capped at ~2 minutes), indefinitely for transient failures. Non-retryable failures such as `EXPECTED_BAG_COUNT_REACHED` are surfaced and removed from the queue.
 - **Ordering matters more with shared codes.** Pickup scans for one order must sync in local creation order because the server assigns each to the next logical slot. "Accept assignment" syncs before scans; scans sync before "mark done."
 - **Partial connectivity (e.g., can reach the internet but the specific API is degraded):** standard circuit-breaker behavior client-side — after repeated failures to a specific endpoint, back off more aggressively and surface a persistent (non-blocking) "having trouble syncing, will keep trying" banner rather than silently retrying forever with no visibility.
@@ -1387,28 +1420,30 @@ The only genuine conflict class is **assignment-acceptance races** (Section 3.3)
 - **Pigeon hole *reservation*** (Section 4.5) requires a live server round trip, because it allocates a genuinely scarce, contended physical resource across potentially many pickers simultaneously — offline-first allocation of a scarce shared resource is a distributed-consensus problem far more complex than this system needs to take on; it is simpler and safer to make the picker wait a few seconds for connectivity at this one specific step than to build (and debug, and explain to the CTO) a conflict-free offline resource allocator.
 - **Delivery partner assignment and admin overrides** are inherently ops-desk actions performed on presumably-connected devices (Section 4.9) — not designed for offline use at all.
 
+## 10.6 PWA platform constraints
+
+- **Camera:** `getUserMedia` works only on HTTPS (or localhost) and requires user permission. Test the exact target Android Chrome and iPhone/Safari versions; Chrome on iOS still uses Apple's WebKit engine.
+- **Storage eviction:** IndexedDB is durable but not equivalent to native app storage; browsers may evict data under storage pressure. Request persistent storage where supported (`navigator.storage.persist()`), show unsynced count prominently, and instruct pickers not to clear site data/log out while actions are pending.
+- **Background execution:** a closed browser/PWA is not guaranteed to run sync or receive updates. Sync immediately whenever the app is open and regained connectivity; the Ops dashboard should alert on unusually old unsynced activity.
+- **Push:** Web Push support varies. On iOS it generally requires an installed home-screen web app and user permission; a normal open website tab cannot be treated like a native push client. Therefore push is optional enhancement, never a correctness dependency in the free MVP.
+
 ---
 
 # 11. Authentication
 
 ## 11.1 Design principles
 
-- **Match the authentication method to the actor's context, not a one-size-fits-all login.** Pickers and warehouse staff are frequently semi-technical, high-turnover, and operating a shared or personal device in the field — phone-number + OTP is the lowest-friction, lowest-support-burden option. Admins/Ops are a small, stable, more technical group where email + password (with the option of SSO later, Section 22) is appropriate and gives access to stronger account-recovery/audit tooling.
-- **Stateless access tokens (JWT), server-tracked refresh tokens.** Access tokens are short-lived (e.g., 15–30 minutes) and carry `user_id` + `role` claims, validated without a DB hit on every request (keeps the hottest API paths — scans — fast, Section 18). Refresh tokens are longer-lived, stored server-side (allowing immediate revocation, e.g., when offboarding a picker), and rotated on use.
+- **One login implementation for every role:** Supabase Auth email/password. Phone OTP is deliberately excluded from the free-only MVP because sending OTP SMS is not free. Admins provision picker/staff accounts; there is no public self-signup.
+- **Supabase sessions:** the Supabase client manages access/refresh tokens. Role and warehouse scope live in server-controlled profile tables, not user-editable client metadata. RLS and RPC functions authorize `auth.uid()` on every data operation.
 - **Every login and role change is audited** (`audit_logs`, Section 5.3.20) — who logged in, from what device/IP, and every privilege change, permanently.
 
-## 11.2 Picker & Warehouse Staff — Phone OTP
+## 11.2 All Human Roles — Supabase Email + Password
 
-1. `POST /api/v1/auth/otp/request` — `{ "phone_number": "+9198..." }`. Rate-limited hard per phone number (Section 17.6) to prevent OTP-spam abuse.
-2. SMS provider (Section 14) delivers a 6-digit code, short TTL (~5 minutes).
-3. `POST /api/v1/auth/otp/verify` — `{ "phone_number": "...", "code": "..." }` → returns access + refresh token pair if the phone number matches an `ACTIVE` `users` row with role `PICKER` or `WAREHOUSE_STAFF`; `403 ACCOUNT_NOT_PROVISIONED` if the number isn't pre-registered by an admin (pickers/staff are **onboarded by Ops/Admin first**, Section 12 — this is not a self-serve signup flow, which matters for fraud prevention: an unknown phone number should never be able to become a picker with system access to real warehouses on its own).
-
-## 11.3 Ops Manager & Admin — Email + Password
-
-Standard email/password with argon2/bcrypt hashing, plus:
-- Mandatory password complexity + breach-list check (e.g., HaveIBeenPwned k-anonymity API) at set/change time.
-- Optional TOTP-based 2FA, **recommended as mandatory for any `is_super_admin=true` account** given the blast radius of admin access (Section 17).
-- Session/refresh-token revocation available from the Admin Panel ("log this user out everywhere") for incident response.
+1. For the fastest MVP, a trusted Admin creates the Auth user in the Supabase Dashboard and inserts the corresponding application profile/role row through a controlled SQL/RPC workflow. A service-role Edge Function can automate this later; the service-role key must never be used from the PWA.
+2. User signs in through the shared PWA login screen.
+3. After authentication, the PWA reads the permitted profile and renders only allowed tabs. Direct URL access is still blocked by RLS/RPC authorization.
+4. Password recovery uses Supabase Auth email within free-tier limits. Until custom email infrastructure is funded, an Admin-assisted reset is the fallback for delivery/rate-limit failures.
+5. Enable Supabase-supported MFA for Admins when available without adding paid infrastructure; super-admin accounts should use it even if field users do not.
 
 ## 11.4 Store & Delivery Partner — API Keys
 
@@ -1424,7 +1459,20 @@ Machine-to-machine calls (Section 7.2, 7.5) use a static API key (`stores.api_ke
 | `ADMIN` | Everything, plus: user management, store/delivery-partner integration config, warehouse/sort-wall/pigeon-hole configuration, QR code lifecycle management, global settings |
 | `is_super_admin` (flag on `ADMIN`) | Additionally: manage other admins, view billing/infra config if surfaced in-app, mandatory 2FA |
 
-Authorization is enforced **server-side on every endpoint** via a single middleware checking `(role, action)` against a static policy table (not scattered ad-hoc `if user.role == 'ADMIN'` checks across the codebase) — this is a deliberate architectural choice so that adding a new role or permission later (Section 18/22) is a one-place change, and so a security review can audit the *entire* permission model by reading one file.
+Authorization is enforced in two server-side layers: **RLS policies** for row visibility/basic writes and **versioned Postgres RPC functions** for state transitions. Shared SQL helper functions resolve `auth.uid()` to role and warehouse scope so policy logic is not duplicated inconsistently. UI tab hiding is never authorization. `SECURITY DEFINER` RPCs, where unavoidable, must set a safe `search_path`, validate caller role explicitly, expose only required arguments, and never accept a caller-supplied user/warehouse identity in place of `auth.uid()`.
+
+## 11.6 Minimum Supabase RLS Matrix
+
+| Data | Picker | Warehouse Staff | Ops Manager | Admin |
+|---|---|---|---|---|
+| Own profile/session view | Own row | Own row | Own row | Authorized user list |
+| Orders/bags | Only actively assigned/current historical orders needed by that picker | Orders routed to assigned warehouse | Authorized warehouse(s) | All |
+| Sort walls/holes | Read only for the destination warehouse during an active trip | Read assigned warehouse | Read authorized warehouses | Full |
+| Scans/status mutations | No direct table insert/update; only `scan_bag_v1` and related RPCs | Only correction RPCs for assigned warehouse | Privileged audited RPCs | Privileged audited RPCs |
+| Audit logs | None | Own operational actions only if required | Read authorized warehouse | Read all; never update/delete |
+| Role/config tables | None | None | Limited read | Audited RPCs; bootstrap-sensitive operations remain Dashboard-only |
+
+Default posture: enable RLS on every table in exposed schemas, grant no anonymous access, deny direct mutation of state-machine tables, and add policies one workflow at a time. A test suite must execute every role against allowed and forbidden cases before pilot; with a browser-direct Supabase architecture, RLS is part of the backend, not optional hardening.
 
 ---
 
@@ -1459,8 +1507,9 @@ The Admin Panel is the superset control surface — everything Ops needs day-to-
 
 ## 12.5 Users & Roles
 
-- Create/manage all user accounts across every role, assign/change roles, force-logout, view login history (from `audit_logs`).
-- **This screen is deliberately restricted to `ADMIN`** — even an `OPS_MANAGER` cannot create new admin accounts, closing an obvious privilege-escalation gap.
+- **Fastest free MVP:** user creation and force-logout are performed by a trusted founder/Admin in the Supabase Dashboard; the PWA screen manages application profile status, warehouse, and non-admin roles through audited RPCs.
+- Creating Auth users from the PWA requires a service-role Edge Function and is deferred until dashboard-based onboarding becomes a bottleneck.
+- Admin-role/super-admin changes remain outside ordinary client RPCs and require the trusted Supabase Dashboard/migration workflow initially, closing an obvious privilege-escalation path.
 
 ## 12.6 Exceptions Queue
 
@@ -1504,9 +1553,9 @@ On a successful warehouse-arrival scan for a picker carrying orders `O1...On`:
 When the sort wall has no free holes for one or more of a picker's orders:
 
 1. The API response (Section 7.3) explicitly marks those orders as `pending_hole` rather than failing.
-2. The picker app shows an unambiguous **staging instruction**: "No pigeon hole available yet for Order X — place these bags in the marked overflow staging area, we'll notify you the moment a hole opens up." (This requires a designated physical overflow shelf/area at the warehouse — a process requirement this document flags for Ops, not something software can conjure, but software absolutely must acknowledge and track it rather than pretending the problem doesn't exist.)
+2. The Picker tab shows an unambiguous **staging instruction**: "No pigeon hole available yet for Order X — place these bags in the marked overflow staging area." The Sort Wall tab creates an outstanding move task when a hole becomes available.
 3. The order's bags are still scanned (`bag_scans` recorded with `scan_type=SORT`, `scanned_entity_type=BAG`, but no matching hole scan yet) so their location ("in overflow staging") is itself tracked, not lost.
-4. A background job (or the same event consumer that handles `pigeon_hole.status → FREE`, Section 8) checks the overflow queue every time a hole frees up and, on a FIFO basis (modified by priority, Section 13.4), immediately reserves the newly-freed hole for the longest-waiting overflow order and **pushes a notification** to whichever picker/staff member is on-shift to physically move the bags from staging into the now-available hole.
+4. The same transactional RPC that frees a hole claims the next eligible overflow order (FIFO modified by priority), reserves the hole, and writes an **in-app task/notification** for on-shift warehouse staff to move the bags. This avoids a separate background worker in the free MVP.
 5. **This is the direct, concrete implementation of the PRD's own stated requirement** ("force assign delivery partner options in case an order is being delayed but the pigeon hole is not free yet") generalized correctly: the PRD's language focuses only on the *delivery-partner-delay* cause of hole scarcity, but hole scarcity can equally be caused by an *inbound* surge (many pickers arriving at once) — the overflow design above handles both causes with one mechanism, whereas a design that only addressed delivery-partner delays (as narrowly read from the PRD) would leave the inbound-surge case completely unhandled.
 
 ## 13.4 Priority orders
@@ -1522,7 +1571,7 @@ Directly implementing the PRD's stated requirement, with the full state-machine 
 
 1. Each warehouse has a configured **backup delivery partner chain** (ordered list) for automatic reassignment.
 2. If a `delivery_assignments` row sits in `ASSIGNED` (not yet `ACCEPTED`/`ARRIVED`) beyond a configurable timeout (e.g., 20 minutes), the system automatically reassigns to the next partner in the chain and notifies Ops of the auto-reassignment (visibility, not just silent automation).
-3. Ops can **at any time**, regardless of timeout, manually force-assign a different partner via the Sort Wall Website (Section 4.9/7.4) — this is the escape valve for situations the automated timeout hasn't caught up to yet (e.g., Ops gets a phone call from the primary partner saying they'll be late, before the timeout has elapsed).
+3. Ops can **at any time**, regardless of timeout, manually force-assign a different partner via the Sort Wall tab (Section 4.9/7.4).
 4. If an order is `READY_FOR_DISPATCH`/`DELIVERY_ASSIGNED` and its hole is urgently needed (overflow pressure per Section 13.3), Ops has a distinct "hold for pickup, free the hole" action (Section 3.7) that physically relocates the bags to a marked shelf while keeping the order's delivery assignment intact — decoupling "software hole occupancy" from "physical bag location" for exactly this edge case, so the sort wall's *capacity* is never artificially constrained by a *delivery* delay that has nothing to do with sorting capacity.
 
 ## 13.6 Failure scenarios and how the design handles each
@@ -1542,30 +1591,29 @@ Directly implementing the PRD's stated requirement, with the full state-machine 
 
 | Channel | Used for | Why |
 |---|---|---|
-| **Push (FCM/APNs)** | Picker: new order offer, cancellation mid-trip, hole freed after overflow wait. Ops/Staff: exceptions, hole-out-of-service alerts. | Free, immediate, in-app-context-aware (tapping opens the relevant screen) — default channel for anything going to an actor who has our app installed and is logged in |
-| **SMS** | Delivery partner assignment notification (when no API integration exists, Section 2.5); critical Ops escalations if push is unreliable/unavailable | Works without the app installed/open; universal reach; costs money per message, used deliberately, not for every minor update |
-| **WhatsApp** (Business API) | Same use cases as SMS, preferred where the target audience already lives in WhatsApp (very common for delivery partners/couriers in many markets) — richer formatting (e.g., a map link, order summary) than plain SMS at similar cost | Optional channel, configurable per delivery partner's preference |
-| **Email** | Admin-only: security alerts (new admin login from new device), weekly ops summary reports (Section 16) | Low urgency, higher information density appropriate use cases only |
+| **In-app Realtime** | Picker assignments/cancellations; Sort Wall exceptions and status changes | Included with Supabase Free within current quotas; works while the PWA is open |
+| **Browser notification / Web Push (optional)** | Best-effort attention signal | Can be free, but browser/platform support is inconsistent and iOS generally requires an installed PWA; never a correctness dependency |
+| **Manual phone/WhatsApp** | Delivery partner coordination and critical escalation | No paid API integration in MVP. Ops uses existing human communication channels outside the software and records the outcome in the PWA. |
+| **SMS / WhatsApp Business API** | Future automated escalation | Explicitly excluded while the infrastructure budget is $0 |
 
 ## 14.2 Retry and delivery guarantees
 
-- Every notification is a `notifications` row (Section 5.3.21) **before** any send attempt — this ensures a crash mid-send never results in "we don't know if this went out," because the durable record exists first.
-- Provider send failures retry with exponential backoff (`retry_count`, capped, e.g., 5 attempts over ~10 minutes) before marking `FAILED`.
-- **Deduplication:** notifications carry a template + entity-scoped dedup key (e.g., `order_assigned:{orderId}:{pickerId}`) so a retried upstream event (Section 8.5's at-least-once guarantee) never results in the same picker getting the same push twice.
+- Every in-app notification is a durable `notifications` row with an entity-scoped dedup key and `read_at`. Realtime is only the attention signal; reconnecting clients query unread rows.
+- Optional browser notifications are derived from the durable row. Their delivery is best-effort and is not represented as guaranteed.
 
 ## 14.3 Escalation
 
 This is the notification system's most operationally important feature, directly serving Section 3.8/12.6's "nothing stays silently stuck" principle:
 
 1. Every `EXCEPTION_*` state and every `OUT_OF_SERVICE` hole starts an escalation timer on entry.
-2. **Tier 1 (0–15 min):** in-app dashboard badge + push to on-shift Warehouse Staff for that warehouse.
-3. **Tier 2 (15–45 min, unresolved):** SMS to the on-duty Operations Manager.
-4. **Tier 3 (45+ min, unresolved):** SMS/call-worthy alert to a configured on-call admin/founder rotation — at 100 orders/day, this is very plausibly a named individual's personal phone, and the config should support that just as easily as a larger on-call rotation later (Section 18).
+2. **Tier 1 (0–15 min):** in-app dashboard badge, color change, and optional sound/browser notification while open.
+3. **Tier 2 (15–45 min):** prominent red Exceptions queue plus an explicit manual-call task assigned to the on-duty Operations Manager.
+4. **Tier 3 (45+ min):** on-duty staff manually calls/messages the configured founder/on-call contact and records acknowledgement in the PWA. Automated SMS is added only after a paid communications budget exists.
 5. Every escalation step is itself logged (feeds Section 16 "time-to-resolution" metrics) — the escalation system's own effectiveness must be measurable, not assumed.
 
 ## 14.4 What the PRD does not mention, but this design adds
 
-The PRD's screens focus entirely on the picker's happy path and never mention notifications explicitly, but the workflow (Section 3) makes clear that **operations cannot function without them** — an Ops team staring at a dashboard 24/7 waiting for something to go wrong does not scale even at 100 orders/day with a handful of staff. Push/SMS-driven escalation (Section 14.3) is this document's answer to "how does Ops find out about a problem without constantly watching a screen," and should be treated as a v1 requirement, not a nice-to-have polish item, precisely because the team is small enough that nobody has spare attention to babysit a dashboard.
+The $0 constraint means the MVP cannot honestly promise reliable automated off-app escalation. Operations must assign someone to keep the Sort Wall/Exceptions tab open during active warehouse hours and follow the manual call procedure above. This is acceptable at 100 orders/day but is an explicit operational cost, not a hidden equivalent to paid push/SMS.
 
 ---
 
@@ -1578,22 +1626,21 @@ A common mistake in systems like this is to treat "logging" as one undifferentia
 | Concern | Table/System | Retention | Audience | Can it ever be lost? |
 |---|---|---|---|---|
 | **Business/audit record** — what physically happened to an order/bag/hole | `bag_scans`, `status_history`, `audit_logs` (Postgres, Section 5) | Indefinite (this *is* the business) | Ops, support, legal/dispute resolution, future analytics | **No** — loss here is a business incident, not an engineering inconvenience |
-| **Technical application logs** — request/response traces, errors, debug output | Structured JSON logs → log aggregation platform (Section 19) | 30–90 days | Engineers, debugging | Yes, tolerable — these are for troubleshooting, not the source of truth |
+| **Technical application logs** — RPC/Edge Function/database errors and browser failures | Supabase logs/dashboard plus browser console; optional free error tracker | Limited by provider retention | Engineers, debugging | Yes, tolerable — these are for troubleshooting, not the source of truth |
 | **Event log (outbox)** — mechanism for fan-out | `events` table (Section 5.3.19) | 30–90 days after `published_at` | Engineers (replay/debug), not a business record | Yes, tolerable, because the business facts it triggered are already durably recorded elsewhere by the time it's archived |
 
 ## 15.2 Structured application logging
 
-- Every log line is structured JSON (never free-text `printf`-style logs), minimum fields: `timestamp`, `level`, `service`, `request_id`, `user_id` (if applicable), `order_id`/`bag_id` (if applicable), `message`, `context` (arbitrary key-values).
-- **`request_id` is generated at the edge (API gateway/load balancer or first application middleware) and threaded through every downstream log line and outbound call for that request** — this single practice is what makes debugging a specific picker's specific failed scan tractable ("show me every log line for request_id X") instead of a guessing game correlating timestamps across services.
-- Every important *business* event (Section 8.3's catalogue) is logged at `INFO` level in application logs **in addition to** its durable record in `bag_scans`/`events` — the application log is for fast `grep`/dashboard-query debugging; the DB tables are the permanent record. Neither replaces the other.
+- Postgres RPC and Edge Function failures use structured Supabase logs where available. The PWA generates a correlation/request UUID for every mutation and includes it in the RPC input/event metadata.
+- Durable `bag_scans`, `events`, `status_history`, and `audit_logs` are the primary free-MVP diagnostic record. Do not build a second custom logging pipeline merely to duplicate them.
 
 ## 15.3 What "every important event should be logged" means concretely
 
-Directly answering the PRD's Section 15 requirement: every event in the Section 8.3 catalogue, every authentication event (login success/failure, token refresh, logout), every authorization denial (a user attempting an action their role doesn't permit — a strong security signal, Section 17), every external API call (Store/Delivery Partner/notification provider) with latency and outcome, and every admin/ops manual override (already covered by `audit_logs`, but also mirrored to application logs for real-time alerting purposes, Section 16).
+Directly answering the PRD's Section 15 requirement: every event in Section 8.3, Supabase authentication events where exposed, every rejected privileged RPC attempt, every Store/Partner Edge Function call with outcome, and every Admin/Ops manual override. Authorization denials that RLS does not expose richly enough should be captured inside privileged RPC functions before raising a safe error.
 
 ## 15.4 Log correlation across the offline-sync boundary
 
-Because scans can be recorded on-device long before they reach the server (Section 10), the `request_id` model above is extended: the picker app generates a `client_event_id` (Section 5.3.5) at the moment of the *physical* action, and this ID is carried through the entire lifecycle — local storage, sync request, server processing, resulting `bag_scans` row, and any application log lines about that specific scan — so a single ID can be traced from "picker's phone at 9:14am" to "server processed it at 9:47am after regaining connectivity" to "dashboard updated at 9:47:02am," even though those three timestamps are all different and the gap between them is itself operationally meaningful (Section 16 tracks "offline sync lag" as a metric for exactly this reason).
+Because scans can be recorded in the PWA long before they reach Supabase, the PWA generates `client_event_id` at the physical action and carries it through IndexedDB, RPC sync, and `bag_scans`. This correlates "captured at 9:14" with "server accepted at 9:47" without a separate logging service.
 
 ---
 
@@ -1614,20 +1661,20 @@ These matter more than raw infrastructure metrics for a system whose entire valu
 ## 16.2 Key metrics (technical/infrastructure)
 
 - API latency and error rate, broken down by endpoint — with the scan endpoints (Section 7.3) specifically watched more tightly than others, since they are the highest-consequence, highest-frequency writes.
-- Outbox publisher lag (`events` rows with `published_at IS NULL` older than N seconds) — a growing backlog here means dashboards/notifications are falling behind reality, a serious operational problem even if the core order/bag data is fine.
+- Supabase usage/quota headroom (database size, egress, Realtime connections/messages, Auth/Edge Function usage) — approaching a free limit is an operational alert requiring reduction or the first paid upgrade.
 - DB connection pool saturation, replication lag (once a read replica exists, Section 18), slow-query log.
 - Offline-sync lag distribution (Section 15.4) — the gap between `client_captured_at` and `created_at` across all recent scans; a widening distribution suggests either a genuine connectivity problem worth investigating at a specific store/warehouse, or a client-side sync bug.
-- Push/SMS/WhatsApp delivery success rate per provider (Section 14.2) — provider outages are common enough in this space that this needs its own dashboard panel, not just an assumption that "notifications work."
+- Realtime reconnect/error rate, pending IndexedDB action count/age, and stale open-client heartbeat — these replace paid notification-provider metrics in MVP.
 
 ## 16.3 Dashboards
 
 - **Ops live dashboard** (Section 4.9, already covers the sort-wall-specific view) — extended with the Section 16.1 business metrics above at the warehouse level, refreshed in real time via the same event stream (Section 8.4).
-- **Engineering dashboard** — the Section 16.2 technical metrics, using whatever the chosen observability stack provides natively (Section 19) — Grafana+Prometheus if self-hosted, or the native dashboard of a hosted provider (Datadog/Better Stack/Axiom) if that's the Section 19 choice; the specific tool matters far less than making sure both dashboards exist and are actually looked at daily by someone with the authority to act on them.
-- **Weekly ops summary (email, Section 14.1)** — a digest for the founders/ops leadership: total orders, exception rate trend, top exception causes, delivery SLA trend — turning the raw metrics above into a recurring, low-effort-to-consume artifact, because dashboards that nobody proactively checks are much less valuable than a report that lands in an inbox.
+- **Engineering dashboard** — Supabase's project/database/API/Realtime logs and usage dashboard, plus a small Admin health page for operational metrics stored in Postgres. No separate paid observability stack in MVP.
+- **Weekly ops summary:** an in-app/exportable report for founders/ops leadership. Automated email is deferred to avoid adding a provider; Ops can manually export/share it.
 
 ## 16.4 Alerting
 
-Alert thresholds are **derived from the same metrics above**, not a separate parallel system — e.g., "pigeon hole utilization > 85% for 10+ minutes" fires the same alerting pipeline as "API error rate > 5% for 5 minutes." Alerts route to the Section 14.3 escalation channels (push → SMS → on-call), with technical infrastructure alerts additionally routed to whichever engineer is on-call (a rotation of one person initially, formalized as the team grows, Section 18).
+Alert thresholds drive in-app banners, badges, sounds, and manual escalation tasks (Section 14.3). Reliable off-app/on-call alert delivery is not available under the strict $0 constraint; during operating hours an assigned staff member must keep the Sort Wall/Exceptions tab open. Funded external alerting is an early upgrade once the operational cost of that manual watch exceeds its price.
 
 ---
 
@@ -1648,7 +1695,7 @@ Covered fully in Section 9.4 — v1's plain order-reference-based codes are gues
 
 ## 17.4 Secrets management
 
-- No secret (DB credentials, API keys, HMAC signing keys, JWT signing keys) is ever committed to source control or stored in a plaintext config file — all are injected via environment variables sourced from the hosting platform's secret manager (Railway/Render's env var vault, or AWS Secrets Manager/Parameter Store at larger scale, Section 18/19).
+- No secret (service-role key, external API keys, HMAC signing key) is committed to source control or bundled into PWA assets. Store these only in Supabase Edge Function secrets/vault. The project URL and anon/publishable key are intentionally public and safe only because RLS is the actual authorization boundary.
 - Secrets are scoped as narrowly as possible (a store's API key can only authenticate as that store, never as another store or as an admin) and rotatable without downtime (the `api_key_ref` indirection in Section 5.3.1/5.3.16 means rotating a key is an update to the secret store plus a DB pointer update, not a schema migration).
 
 ## 17.5 API abuse & webhook security
@@ -1658,11 +1705,11 @@ Covered fully in Section 9.4 — v1's plain order-reference-based codes are gues
 
 ## 17.6 Rate limiting
 
-Per Section 7.1: token-bucket limits per API key (stores/delivery partners) and per authenticated user (pickers/staff/admin), with **generous, scan-specific allowances** so legitimate rapid-fire scanning during a busy pickup is never throttled — the limiting is aimed at abuse patterns (e.g., an attacker brute-forcing OTP codes, Section 11.2, or a misbehaving/looping client) not at normal high-frequency legitimate use, which this system has a lot of by design.
+Supabase Auth/platform rate limits provide the baseline. Store/partner Edge Functions validate scoped keys and can use a simple database-backed fixed window when needed. Internal authenticated RPCs enforce business bounds (assignment ownership, expected bag count, valid transitions) rather than adding a premature rate-limit service. Scan limits must remain generous enough for legitimate bursts.
 
 ## 17.7 Data encryption
 
-- **In transit:** TLS 1.2+ everywhere, enforced at the load balancer/edge and (once decomposed) between internal services too.
+- **In transit:** HTTPS/TLS is enforced by Cloudflare Pages and Supabase; browser camera/geolocation APIs also require a secure context.
 - **At rest:** Database-level encryption at rest (provided natively by any credible managed Postgres host, Section 19) as the baseline; additionally, a small set of genuinely sensitive fields (customer-adjacent data embedded in `store_address`, if it ever includes anything more identifying than a delivery address — worth a conscious data-minimization review before launch) may warrant application-level column encryption, decided case-by-case rather than encrypting everything indiscriminately (which mostly just adds operational complexity without proportionate benefit for non-sensitive operational data like hole numbers or scan timestamps).
 
 ## 17.8 Data minimization and PII handling
@@ -1671,7 +1718,7 @@ Not explicitly asked for in the PRD's Section 17 list, but a necessary companion
 
 ## 17.9 Least privilege (infrastructure & database)
 
-- Application database roles are scoped: the API service's DB user can read/write the operational tables it needs but has no `DROP`/`ALTER` privileges in production; a separate, more restricted read-only role backs any reporting/analytics connection (Section 18); migrations run under a distinct, more privileged role used only by the deployment pipeline, never by the running application.
+- The PWA uses only Supabase's public anon/publishable key plus the signed-in user's JWT. RLS denies unauthorized rows/actions. The service-role key exists only in Supabase Edge Function secrets or trusted migration tooling and is never bundled into browser assets. Migrations use a distinct privileged workflow, never the running client.
 - Admin Panel actions that are especially high-blast-radius (revoking a QR code fleet-wide, deleting a user, changing a delivery-partner API key) require the `is_super_admin` flag specifically, not just generic `ADMIN`, narrowing the set of people who can cause the most damage even within the admin population.
 
 ---
@@ -1684,26 +1731,26 @@ Not explicitly asked for in the PRD's Section 17 list, but a necessary companion
 
 ## 18.2 ~100 orders/day (initial launch)
 
-- **Infra:** Single Postgres instance (managed, e.g., Supabase or Railway Postgres, Section 19) + a single backend application process (monolith, Section 19) + the picker/ops apps. No message broker, no read replica, no caching layer, no service decomposition.
-- **Event fan-out:** Outbox table + in-process polling publisher (Section 8.2) — trivially fast enough at this volume (a handful of events per minute at peak).
-- **Team operating model:** 1–3 engineers can fully understand and operate the entire system; deploys are simple (push to main → CI → deploy), no need for staged rollouts or feature flags beyond basic ones.
+- **Infra:** One Supabase Free project plus one static PWA on Cloudflare Pages Free. No separate API server, message broker, read replica, cache, SMS provider, or paid observability.
+- **Event/UI fan-out:** Supabase Realtime plus periodic refetch; durable outbox retained but no publisher process (Section 8.2).
+- **Team operating model:** 1–3 engineers can fully understand the entire system; PWA deploys are static and database changes are versioned SQL migrations.
 - **What NOT to build yet, deliberately:** multi-region, service decomposition, message broker, read replicas, caching. Every one of these adds operational surface area with zero benefit at this volume, and directly works against the Section 1.6 "small team velocity" constraint.
 
 ## 18.3 ~1,000 orders/day
 
-Concrete triggers that indicate it's time to move to this tier: sustained DB CPU > 60–70%, API p95 latency creeping up during peak hours, or the outbox publisher's lag metric (Section 16.2) starting to show sustained backlog.
+Concrete triggers include approaching any Supabase Free quota, unacceptable project pause/inactivity behavior, sustained DB CPU > 60–70%, or rising RPC latency. **The first scaling step is likely paying for Supabase, not rearchitecting.**
 
 - **Database:** Add a **read replica** for reporting/dashboard queries (Section 16's dashboards move off the primary, which should be reserved for the transactional write path — scans). Introduce **connection pooling** (PgBouncer or the managed host's equivalent) if not already present.
-- **Background jobs:** Move the outbox publisher and notification-sending (Section 14) into a proper background job runner (e.g., a lightweight job queue like Postgres-backed `pg-boss`/`graphile-worker`, or a managed queue) rather than an in-process poller — this is the first real infrastructure addition, and it's a small, well-understood one, not a leap to a distributed system.
+- **Background jobs:** Add an Edge Function/managed scheduled job or a small worker only when automated assignments, external notifications, and outbox side effects become necessary.
 - **QR signing (Section 9.4/17.3):** This is the concrete trigger point to move from plain order-reference QR codes to HMAC-signed codes — at this order volume, the picker pool has typically grown past "everyone is personally known," and forgery risk is no longer theoretical.
-- **Assignment Engine (Section 3.3):** Upgrade from simple broadcast-to-best-picker to a proper ranking/scoring service if picker count has also grown proportionally (more pickers means more contention/races worth optimizing) — still runs inside the same application, just as a more sophisticated module, not a separate service yet.
+- **Assignment Engine (Section 3.3):** Upgrade manual/simple assignment to a scoring RPC or scheduled Edge Function if picker count grows; keep it inside Supabase until independent scaling is justified.
 - **Team operating model:** Likely 3–6 engineers; still one deployable application is fine, but CI should now include a proper staging environment and automated tests around the state machines (Section 6) specifically, since a bug there is now affecting meaningfully more real orders per hour.
 
 ## 18.4 ~10,000 orders/day
 
-Concrete triggers: multiple warehouses/sort walls now operating (multi-tenancy within the schema, already supported per Section 5.1's day-one design decision), sustained write contention on hot tables (`bag_scans`, `pigeon_holes`) visible in slow-query logs, or the single-process monolith's deploy/restart cycle becoming a visible source of picker-facing errors (a restart that used to be invisible at low traffic now drops in-flight requests noticeably).
+Concrete triggers: multiple warehouses/sort walls, sustained contention on `bag_scans`/`pigeon_holes`, RPC/PostgREST limits, or external integrations becoming too complex for Edge Functions.
 
-- **Service decomposition (selective, not a full microservices rewrite):** Split out the highest-load, most independently-scalable concerns into separate deployable services sharing the same Postgres (still one database, multiple applications reading/writing it — NOT yet separate databases per service, which is a much bigger and riskier step): (1) **Ingestion Service** (Store API webhook receivers — bursty, needs to scale independently of the picker-facing API), (2) **Scan/Core API** (the picker app's hot path — scans, assignments), (3) **Notification/Event Worker** (already separated in Section 18.3, now scaled to multiple worker instances).
+- **Service decomposition (selective):** If Supabase RPC/Edge limits become the measured bottleneck, introduce separate Ingestion, Scan/Core API, and Notification/Event Worker services around the existing Postgres contracts. This is the first point a separate backend host is justified.
 - **Message broker introduction:** This is the point where a real broker (Kafka, or a simpler managed option like AWS SQS/SNS or Google Pub/Sub) starts to earn its operational cost — replacing the outbox-table-polling mechanism (Section 8.2) with proper topic-based pub/sub, needed because event volume and consumer count have both grown enough that polling latency and publisher throughput become real constraints. **Critically, because the Section 8 event catalogue and consumer interfaces were designed broker-agnostic from day one, this migration is an infrastructure swap behind an existing abstraction, not a rewrite of business logic.**
 - **Database scaling:** Consider partitioning the highest-volume tables (`bag_scans`, `events`, `status_history`) by time range (e.g., monthly partitions) purely for write/query performance and easier archival — this is a mechanical Postgres feature, not a redesign.
 - **Caching layer:** Introduce Redis (or the managed equivalent) for the highest-read-frequency, low-change data — e.g., "free hole count per sort wall" for the dashboard, QR-code-to-entity lookups on the hottest scan path if DB load analysis shows it's warranted (don't add caching speculatively; add it where profiling shows it matters).
@@ -1730,7 +1777,7 @@ Every option below is scored against the same five criteria, weighted for **this
 |---|---|---|---|---|---|---|
 | **Postgres (self-managed or via a managed host)** | High — mature tooling, ORMs, migrations | Low at small scale, predictable growth | Excellent — the most universally known relational DB skill | Low if managed (backups/patching handled); moderate if self-hosted | Excellent, proven at every scale tier in Section 18 | ✅ **Recommended as the core database** |
 | **MySQL** | High, comparable to Postgres | Comparable | Excellent, comparable | Comparable | Good, comparable | Viable alternative; Postgres preferred here mainly for richer JSON/`jsonb` support (used throughout Section 5 for `events.payload`, `audit_logs.metadata`) and stronger native support for the partial/conditional unique constraints this schema relies on (Section 5.3.15) |
-| **SQLite** | Very high for a single-device/embedded use case | Free | Universal | Trivial | **Wrong tool for a multi-writer, multi-actor server system** — no real concurrent-write story for dozens of pickers hitting the same tables simultaneously | ❌ Rejected for the server; ✅ **correct choice for the picker app's on-device offline store** (Section 10.2) — this is the one place in the whole stack SQLite is exactly right |
+| **SQLite** | Very high for native/embedded use | Free | Universal | Trivial | Wrong tool for the multi-writer server and not browser-native for a PWA | ❌ Rejected for this MVP; use IndexedDB in the PWA (Section 10.2) |
 | **Firebase (Firestore)** | Very high initial velocity, especially for realtime UI updates | Can get expensive fast at write-heavy, per-document-read-billed workloads (this system's scan volume is exactly write-heavy) | Good, but a shrinking pool relative to SQL | Low day-to-day, but **schema/data-integrity enforcement is weak** — this system needs DB-level constraints (unique QR registry, atomic expected-count slot claiming, single active hole reservation, conditional-update assignment races, Section 5) that a document DB either cannot express cleanly or requires fragile application-level enforcement for | Firestore scales horizontally well, but the *data model mismatch* (this is a deeply relational domain — orders→bags→scans→holes→assignments, Section 5.2's ERD) means you'd be fighting the database's grain the entire time, not benefiting from its strengths | ❌ **Not recommended.** The PRD's domain is exactly the kind of multi-entity, constraint-heavy, transactional workload relational databases exist for; Firebase's speed advantage mostly shows up for *simpler* data shapes than this one |
 | **Airtable / Google Sheets** | Extremely fast to start, zero setup | Cheap at tiny scale, but hits row/API limits quickly | N/A — no "hiring" concept, anyone can edit | Effectively none, but that's the problem — no real constraint enforcement, no transactional guarantees, trivial for a warehouse staffer to accidentally corrupt a live operational record | None beyond a few thousand rows before it becomes unusable | ❌ **Not recommended for the core system.** Legitimate use: a founder's very first *prototype* to validate the workflow concept with a handful of real orders before writing any code at all — genuinely useful for that narrow purpose (see Section 20), but must never become "the database" for anything with real users depending on it |
 | **Xano / Appwrite / PocketBase** (no-code/low-code backend platforms) | Very high initial velocity for simple CRUD apps | Low to moderate | Small, specialized hiring pool; hard to find engineers with deep experience in these specific platforms compared to plain Postgres+API-framework | Convenient day-to-day, but **you inherit the platform's opinions about data modeling, and complex custom business logic (Section 3, Section 13's allocation algorithm with `FOR UPDATE SKIP LOCKED`, Section 6's strict state machines) is exactly what these tools are weakest at** — they excel at "build a CRUD admin panel fast," not "implement contention-safe resource allocation with strict invariants" | Generally poor for anything beyond the platform's supported scale tier; migrating off them later, once outgrown, is a genuine rewrite (the opposite of this document's core requirement) | ❌ **Not recommended for the core transactional platform.** Could be reasonably used for a small, genuinely CRUD-only internal tool *adjacent* to the core system (e.g., an internal FAQ/wiki) — never for orders/bags/scans/holes |
@@ -1740,40 +1787,43 @@ Every option below is scored against the same five criteria, weighted for **this
 **Supabase** deserves specific discussion because it directly threads the needle this project needs: it is **Postgres**, with Auth, Realtime (via Postgres logical replication — directly useful for Section 8.4's live dashboard), Storage, and auto-generated REST/GraphQL APIs layered on top, while still being a **real, standard Postgres database underneath** that you fully own the schema for and can query/migrate/self-host with completely standard tools at any time.
 
 - **Dev speed:** Very high — Auth (Section 11.2/11.3), Realtime subscriptions (Section 8.4), and file storage (QR label PDFs, Section 12.3) are all provided out of the box, meaning the small team writes almost none of that infrastructure themselves.
-- **Cost:** Low at 100–1,000 orders/day (generous free/low tiers); scales predictably with usage, and — critically — **because it's just Postgres, you are never locked into Supabase's pricing** the way you would be with Firebase; you can self-host the same Postgres instance or migrate to any managed Postgres host with a `pg_dump`, at any point, with no data-model rewrite (Section 18.5's eventual multi-region sharding is equally possible on plain Postgres regardless of whether Supabase is the current host).
+- **Cost:** **$0 on Supabase Free while within its current database, egress, Realtime, Auth, Storage, and Edge Function quotas.** Limits/pricing/inactivity behavior can change, so the project dashboard must be checked regularly rather than relying on hard-coded numbers in this document. Because it remains Postgres, later migration does not require a domain-model rewrite.
 - **Hiring:** Postgres + standard REST/SQL skills — the same large, easy-to-hire-for pool as plain Postgres, unlike Firebase or the no-code platforms above.
 - **Maintenance:** Low — managed backups, managed auth, managed realtime infrastructure.
-- **Verdict: ✅ Recommended as the fastest-to-ship option that does not create a scaling dead end**, precisely because "Supabase" is not really a different *architecture* than "Postgres + a custom API service" (Section 19.4) — it's the same architecture with more of the undifferentiated plumbing pre-built. This directly satisfies the Section 1 mandate: fast now, no rewrite later.
+- **Verdict: ✅ Chosen.** Project URL: `https://aetrwtubfifljkxwocpy.supabase.co`. Use Auth, Postgres/RLS, Realtime, Storage only if needed, Postgres RPC for transactions, and Edge Functions only for secret-bearing external webhooks.
 
 ## 19.4 Alternative: plain Postgres + a custom backend framework
 
-If the team prefers full control over the API layer from day one (e.g., because the Section 13 allocation algorithm's `FOR UPDATE SKIP LOCKED` transaction logic, or the Section 10 offline-sync endpoint contracts, are seen as too custom/business-specific to want auto-generated CRUD APIs standing in the way) — a hand-rolled backend (Node.js/TypeScript with something like Fastify/NestJS, or Python/FastAPI, or Go) directly on a managed Postgres instance (Railway/Render/DigitalOcean-managed Postgres, or Amazon RDS) is an equally valid, only slightly slower-to-start alternative, with **zero long-term scalability disadvantage versus the Supabase path** — both converge on "Postgres + application code" as soon as any custom business logic exists, which this system has a lot of (state machines, allocation, offline sync). This document's recommendation (Section 20) is to start with Supabase for Auth/Realtime/Storage specifically, while still writing the core business-logic endpoints (Section 7) as custom server-side functions/API routes rather than relying purely on auto-generated table CRUD — getting the velocity benefit without compromising on the correctness-critical logic.
+A custom API remains the future escape hatch when integration volume, long-running workers, or Edge Function constraints justify it. It is explicitly **not** part of the $0 MVP. Correctness-critical custom logic lives in versioned Postgres RPC functions now; those contracts can later be wrapped by a Node/Go/Python service without changing the PWA's domain model or database.
 
 ## 19.5 Hosting
 
 | Option | Dev speed | Cost | Hiring ease | Maintenance | Scalability | Verdict |
 |---|---|---|---|---|---|---|
-| **Railway** | Very high — git-push deploys, managed Postgres add-on, simple env/secret management | Low at small scale, usage-based | N/A (platform-specific, but underlying skills — Docker, standard web frameworks — are universal) | Very low | Good up to meaningful scale; some teams outgrow it around the Section 18.4 tier and migrate to AWS/GCP, which is a hosting migration, not an architecture rewrite, if the app is built with standard containerized services | ✅ **Recommended for MVP/early stage** |
-| **Render** | Very similar profile to Railway | Similar | Similar | Similar | Similar | ✅ Equally valid alternative to Railway — pick based on team preference/pricing at time of decision |
-| **Vercel** | Excellent for the frontend (Sort Wall Website, Admin Panel) — best-in-class for Next.js-style web apps | Low for frontend hosting; not designed to be the home for the stateful backend/DB workload this system needs | Excellent | Very low | Excellent for frontend/edge workloads | ✅ **Recommended specifically for the web frontends**, not as a backend/database host |
-| **Cloudflare** (Workers/Pages/R2) | High for edge-cacheable/static content and lightweight edge functions | Very low | Growing pool | Low | Excellent for its niche (edge, static assets, CDN) | ✅ Useful as a CDN/edge layer in front of the web apps and for static QR-label asset delivery; **not a fit as the primary backend/DB host** for a stateful, transactional workload like this one |
+| **Railway** | Very high | Usage-based, not guaranteed $0 | N/A | Low | Good | ❌ Not used while budget is strictly $0 |
+| **Render** | High | Free offerings/policies may sleep or change | N/A | Low | Good | Not selected; avoid a second runtime entirely |
+| **Vercel** | Excellent for frontend | Hobby/free subject to terms and quotas | Excellent | Very low | Excellent | Valid alternative, but unnecessary Next.js/server features add complexity for this static client |
+| **Cloudflare Pages** | Excellent for a static Vite PWA | $0 within current free limits | Standard web skills | Very low | Excellent for static assets/CDN | ✅ **Recommended PWA host**; Supabase remains the stateful backend |
 | **DigitalOcean** | Moderate — more manual setup (Droplets/App Platform/Managed DB) than Railway/Render | Predictable, often cheaper at steady mid-scale | Good | Moderate — more of "you manage it" than the fully-managed platforms above | Good, well-trodden path to scale manually | Reasonable **middle tier** once outgrowing Railway/Render but before justifying full AWS complexity |
 | **AWS** (ECS/RDS/SQS/etc.) | Lower initial dev speed — much more setup/configuration required | Can be optimized well at scale, but easy to overspend without dedicated ops attention | Excellent — largest talent pool, most transferable skill | Highest — genuinely needs someone who knows AWS well, or velocity suffers | Best-in-class, essentially unlimited runway through every Section 18 tier | ✅ **Recommended migration target once the Section 18.4/18.5 triggers are hit**, not before — adopting AWS's full complexity at 100 orders/day is a classic premature-scaling mistake that actively hurts the Section 1.6 velocity goal for no corresponding benefit yet |
 
-## 19.6 Mobile app framework (Picker App)
+## 19.6 PWA framework
 
-- **React Native** or **Flutter** are both reasonable choices for a camera-scanning, offline-capable, cross-platform (iOS+Android) app; either supports the SQLite-backed offline queue (Section 10.2) and camera/QR libraries needed. Recommendation leans **React Native** primarily for hiring-pool overlap with the web frontend's likely JavaScript/TypeScript stack (Section 19.3/19.4), letting a small team share code/patterns and, in a pinch, have web engineers contribute to the mobile app — a meaningful velocity advantage at this team size specifically, even though Flutter is an equally technically credible choice on its own merits.
+Use **React + TypeScript + Vite** with a PWA plugin/service worker, Supabase JS, IndexedDB/Dexie, and a browser QR scanner library. This produces static assets, opens normally in Chrome, installs as a PWA where supported, and keeps Picker/Sort Wall/Admin in one repository and deployable artifact. Next.js is not needed because there is no server-rendering requirement or separate Node backend; Vite is simpler and faster for this client-only architecture.
 
 ## 19.7 Final recommended stack (explicit, single answer, per the "compare then decide" mandate)
 
-- **Database:** Postgres, provisioned via **Supabase** initially (Section 19.3).
-- **Backend business logic:** Custom API service (Node.js/TypeScript, e.g., NestJS or Fastify) deployed on **Railway**, talking to the Supabase Postgres instance directly (not routing every business operation through Supabase's auto-generated CRUD layer) — using Supabase for Auth, Realtime dashboard subscriptions, and file storage, while owning the Section 7 API contracts and Section 13 transactional logic in first-party code.
-- **Sort Wall Website + Admin Panel:** Next.js (or similar React-based framework), hosted on **Vercel**.
-- **Picker App:** React Native, with an embedded SQLite offline store (Section 10.2).
-- **Notifications:** FCM/APNs for push; a standard SMS/WhatsApp Business API provider (Section 14) for the rest.
-- **Observability:** A single hosted observability provider (e.g., Better Stack, Axiom, or Datadog's smallest tier) rather than self-hosting Prometheus/Grafana at this team size — self-hosting observability infrastructure is exactly the kind of "operational surface area with no direct customer benefit" this document's Section 1.6 constraint argues against taking on prematurely; revisit at the Section 18.4 tier if cost or feature needs justify self-hosting.
+- **One frontend:** React + TypeScript + Vite PWA, with role-gated Picker, Sort Wall, Ops, and Admin routes.
+- **Frontend hosting:** Cloudflare Pages free tier.
+- **Backend/database/auth/realtime:** Supabase Free project at `https://aetrwtubfifljkxwocpy.supabase.co`.
+- **Business logic:** Postgres RPC functions for transactions; RLS for every exposed table; Supabase Edge Functions only for Store/Partner webhooks that require secrets.
+- **Offline:** service worker for app shell + IndexedDB/Dexie for assignments and pending actions.
+- **Notifications:** durable in-app notifications + Supabase Realtime; optional Web Push only where browser support permits. No paid SMS/WhatsApp provider.
+- **Observability:** Supabase dashboard/logs plus in-product operational dashboards and durable audit/event tables. A free external error tracker may be added only if its terms/limits fit; no paid observability dependency.
 
-This stack is not the only valid answer — it is the answer that best satisfies **this specific business's** stated constraints (small team, need for correctness, no rewrite at 10,000+/day). A team with different existing skills (e.g., a Python-heavy founding team) should absolutely substitute FastAPI for the Node.js backend without changing anything else in this document, since nothing here is Node-specific in its actual design.
+This is the least-time, $0 recurring-cost architecture. Its deliberate trade-off is browser/PWA platform variability (Section 10.6) and reliance on Supabase free-tier quotas. It preserves an exit path because the data model is standard Postgres and the critical operations have explicit RPC contracts.
+
+**PWA build configuration:** `VITE_SUPABASE_URL=https://aetrwtubfifljkxwocpy.supabase.co` and `VITE_SUPABASE_PUBLISHABLE_KEY=<public key from Supabase dashboard>`. These values appear in browser JavaScript by design. Never create a `VITE_SUPABASE_SERVICE_ROLE_KEY`; any variable prefixed for the frontend is public.
 
 ---
 
@@ -1783,10 +1833,10 @@ This stack is not the only valid answer — it is the answer that best satisfies
 
 This is achievable with the **full architecture described in this document**, not a different, lesser architecture — the design throughout this document was deliberately kept simple enough (Section 1.3, Section 18.2) that "the right long-term design" and "the fastest MVP" are the same thing at this stage, which is the entire point of avoiding premature complexity. Concretely, in 4 weeks a small team should be able to ship:
 
-- Week 1: Schema (Section 5) + auth (Section 11) + Store ingestion API (Section 7.2) with shared order-level QR generation, explicit `qr_mode`, expected-count enforcement, and a forward-compatible path to future unique bag codes (Section 9).
-- Week 2: Picker App — order queue, bag scanning at store, offline queue basics (Section 10, simplified: local queue + retry, without the full priority-sequencing nuance — see Section 20.3 on what can be cut).
-- Week 3: Warehouse arrival, sort-wall allocation (Section 13.1/13.2's core allocation algorithm — this is genuinely small, a single `FOR UPDATE SKIP LOCKED` query), pigeon hole scanning, basic Sort Wall Website dashboard (Section 4.9, without live WebSocket updates yet — polling every few seconds is a fine MVP substitute).
-- Week 4: Manual delivery-partner assignment (Section 3.7, Ops-driven, no partner API integration needed yet), basic Admin Panel (orders search, manual corrections, Section 12.1), and hardening/testing of the state machines (Section 6) specifically, since these are the highest-consequence code paths to get right before real bags are on the line.
+- Week 1: Supabase schema/RLS/Auth/RPC foundations (Sections 5, 7, 11), shared QR mode, and the single PWA shell/login/role-gated navigation.
+- Week 2: Picker tab — assignments, bag scanning, warehouse arrival, IndexedDB pending-action queue, and basic reconnect sync.
+- Week 3: Sort Wall tab — transactional hole allocation, pigeon-hole scanning, live/polling dashboard, Exceptions queue.
+- Week 4: Ops/Admin tabs, manual delivery-partner workflow, PWA install/camera/device testing, and state-machine/RLS/concurrency hardening.
 
 ## 20.2 If launching in 2 weeks
 
@@ -1795,9 +1845,9 @@ Achievable, but requires explicit, conscious corner-cutting — enumerated exact
 **Safe to cut for 2 weeks:**
 - **Automatic picker assignment (Section 3.3):** Replace with Ops manually assigning every order to a picker via a simple Admin screen. Loses speed/automation, loses nothing in terms of correctness.
 - **Delivery partner API integration (Section 7.5):** Manual-only (Ops calls/messages a partner, records the assignment). This is explicitly the PRD's own stated starting assumption in places, and remains completely workable at 100 orders/day.
-- **Push notifications (Section 14):** Picker app polls for updates every 15–30 seconds instead; loses a little responsiveness, loses no correctness.
+- **Web Push notifications (Section 14):** PWA polls/refetches while open; loses off-app responsiveness, loses no transactional correctness, and avoids paid/provider work.
 - **Full offline conflict/priority sequencing nuance (Section 10.3's per-assignment sequencing rule):** A simpler "just retry everything in creation order, forever, until it succeeds or the server says it's invalid" is a fine 2-week substitute for the fully-specified sync worker.
-- **Live WebSocket/SSE dashboard updates (Section 8.4):** Polling-based dashboard refresh (every 3–5 seconds) is visually almost indistinguishable to a warehouse staffer and is far simpler to build.
+- **Supabase Realtime subscriptions (Section 8.4):** Polling-based dashboard refresh (every 5–15 seconds) is simpler to validate initially and is adequate at 100 orders/day.
 - **QR signing (Section 9.4), rotating warehouse-gate codes (Section 9.5):** Accept the residual forgery/replay risk explicitly and consciously at this trust level (tiny, known picker pool) — but this must be a **documented, revisited decision**, not a silently forgotten gap (Section 21 tracks it as a live risk with an owner and a revisit trigger).
 - **Multi-warehouse/multi-sort-wall UI polish:** The schema supports it (Section 5.1) regardless, but the Admin Panel/dashboard can hardcode "one warehouse" assumptions in the UI layer for 2 weeks without it costing anything later, since the data model was never the part being cut.
 
@@ -1835,7 +1885,7 @@ Each risk includes its category, a concrete failure scenario, and a mitigation a
 | 12 | Security | Compromised store/delivery-partner API key | Attacker injects fake orders or fake delivery-status updates | Scoped, hashed, rotatable API keys (Section 17.4); HMAC-signed webhooks (Section 17.5); idempotent, per-store-scoped ingestion (Section 5.3.2) limiting blast radius to one store even if compromised |
 | 13 | Security | Compromised admin account | Attacker can override any order state, view all data, revoke QR codes en masse | Mandatory 2FA for `is_super_admin` (Section 11.3/17.9), narrow blast-radius separation between `ADMIN` and `is_super_admin` actions, full audit logging of every action (Section 12.8) enabling fast forensic reconstruction even after the fact |
 | 14 | Technical | Store API is unreliable/down, blocking new order ingestion | Orders can't enter the system at all during a store outage, appears as "no orders" rather than "ingestion broken" | Retry/backoff + explicit ingestion-health monitoring per store (Section 12.4/16.2), distinguishing "genuinely no new orders" from "ingestion pipeline is broken" as different, differently-alerted states |
-| 15 | Technical | Single-region, single-database outage (no replica/failover in the 100/day tier) | A Postgres outage takes down the entire platform, including the picker app's ability to even show cached data if the app also needs a live check | Managed Postgres provider's built-in backup/point-in-time-recovery (Section 19) as the accepted baseline at this tier; the picker app's local-first design (Section 10) means **scanning itself keeps working** even during a full backend outage, syncing once service is restored — a deliberate resilience property of the offline architecture, not just a UX nicety |
+| 15 | Technical | Supabase Free project outage, pause, quota exhaustion, or data-loss limitation | Live reads/RPCs stop; Sort Wall allocation cannot proceed | PWA app shell and assigned-order scans continue locally where cached; hole reservation remains blocked by design. Monitor quota headroom, export logical backups where the free plan permits, and treat a paid plan/stronger backup posture as the first operational upgrade. |
 | 16 | Operational | Ops/on-call coverage gap (single founder or single ops manager, no true 24/7 coverage) | An escalation (Section 14.3) has nowhere to go outside business hours, an exception sits unresolved overnight | Explicitly named in Section 1.6/14.3 as a current-stage limitation, not solved by software; recommend a minimum documented on-call/escalation policy exists before launch even if it's literally one phone number, so it's a conscious business decision rather than an accidental gap |
 | 17 | Data integrity | Store packs wrong contents into a bag (a bag physically doesn't match its logical order) | System has no way to know — this is a fundamental limitation of QR-based tracking, not a fixable software bug | Named explicitly as a residual, un-mitigable-by-software risk (Section 9.7) — the mitigation is store-side process (packing QA, staff training), a business/operations conversation with each store partner, not a Section 22 backlog item |
 | 18 | Technical | Clock skew / trusting client timestamps for anything security- or ordering-sensitive | A malicious or simply misconfigured device reports a fabricated `client_captured_at` to manipulate reported SLAs or dispute resolution | Server `created_at` is always the authoritative timestamp for any ordering/security decision (Section 10.4); `client_captured_at` is retained *only* for operational/reporting insight into offline lag, explicitly never trusted for state-machine transition ordering |
@@ -1877,7 +1927,7 @@ Organized by theme, roughly in order of expected impact, without implying a fixe
 - Formal SLA/billing integration per store and per delivery partner, consuming the event log (Section 8) as its input, once the business has enough volume for automated settlement to matter more than manual invoicing.
 
 **Developer experience & platform maturity**
-- Feature flagging system for safely rolling out changes to the picker app's core scanning flow (the single highest-consequence UI in the product) to a subset of pickers/warehouses before a full rollout.
+- Feature flags for safely rolling out changes to the PWA Picker tab's scanning flow to a subset of users/warehouses.
 - Formal load/chaos testing of the Section 13.2 allocation algorithm and Section 10 offline-sync path specifically, given how much of this document's confidence rests on their correctness under contention and unreliable networks.
 - A proper staging environment with synthetic store/delivery-partner integrations for safe end-to-end testing without touching real warehouse operations (increasingly important as the Section 18.3+ tiers introduce more moving parts).
 
