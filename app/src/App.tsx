@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './auth/AuthProvider';
+import { AuthProvider } from './auth/AuthProvider';
+import { useAuth } from './auth/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { PickerPage } from './pages/PickerPage';
 import { SortWallPage } from './pages/SortWallPage';

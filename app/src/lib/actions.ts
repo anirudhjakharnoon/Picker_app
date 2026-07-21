@@ -1,5 +1,5 @@
 import { enqueueAction, newClientEventId, type PendingActionType } from './offlineDb';
-import { trySyncNow, type SyncResult } from './syncEngine';
+import { onSync, trySyncNow, type SyncResult } from './syncEngine';
 
 /**
  * Queue-first action submission used by every Picker-tab mutation.
@@ -30,7 +30,42 @@ export async function submitAction(
     return { localId, immediate: null };
   }
 
-  const results = await trySyncNow();
-  const immediate = results.find((r) => r.action.id === dexieId) ?? null;
+  // `trySyncNow()` intentionally no-ops while another queue drain is active.
+  // Previously that made a newly queued warehouse-arrival action return
+  // `immediate: null` even while online. GateScanScreen then remained paused
+  // forever because it received neither success nor error. Subscribe before
+  // triggering the drain and keep nudging it until this exact Dexie row emits
+  // a result (or a conservative timeout is reached).
+  const immediate = await waitForActionResult(dexieId, 30_000);
   return { localId, immediate };
+}
+
+function waitForActionResult(dexieId: number, timeoutMs: number): Promise<SyncResult | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const finish = (result: SyncResult | null) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      globalThis.clearInterval(retryTimer);
+      globalThis.clearTimeout(timeout);
+      resolve(result);
+    };
+
+    const unsubscribe = onSync((results) => {
+      const match = results.find((result) => result.action.id === dexieId);
+      if (match) finish(match);
+    });
+
+    // If another drain is active, this first call returns immediately; the
+    // interval retries as soon as it finishes. Calls are safe because the
+    // sync engine itself has a single-flight guard.
+    const retryTimer = globalThis.setInterval(() => {
+      void trySyncNow();
+    }, 150);
+    const timeout = globalThis.setTimeout(() => finish(null), timeoutMs);
+
+    void trySyncNow();
+  });
 }

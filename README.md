@@ -43,6 +43,13 @@ Click **Raw**, then select all and copy the complete file.
 Do not paste the file a second time. It creates the database tables and is
 intended for a new/empty project.
 
+> Already set up an earlier version? `supabase/setup.sql` now also includes
+> `0005_order_fragile.sql`, which powers the "Fragile Items" badge and store
+> display names. If you set up before this file existed, open
+> [`supabase/migrations/0005_order_fragile.sql`](supabase/migrations/0005_order_fragile.sql),
+> paste it into a new SQL Editor query, and Run it once. The app works
+> without it; running it just lights up those extras.
+
 ## Step 3: Create the demo warehouse and pigeon holes
 
 1. Open [`supabase/bootstrap_demo.sql`](supabase/bootstrap_demo.sql).

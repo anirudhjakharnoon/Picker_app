@@ -60,10 +60,43 @@ export function SortWallPage() {
   };
 
   const exceptionOrders = orders.filter((o) => o.status.startsWith('exception_'));
+  const freeCount = holes.filter((hole) => hole.status === 'free').length;
+  const inUseCount = holes.filter((hole) =>
+    ['reserved', 'partially_filled'].includes(hole.status)
+  ).length;
+  const readyCount = holes.filter((hole) => hole.status === 'filled').length;
+  const unavailableCount = holes.filter((hole) => hole.status === 'out_of_service').length;
 
   return (
     <div className="sort-wall-screen">
       {toast && <div className="toast">{toast}</div>}
+
+      <header className="panel-heading">
+        <div>
+          <span className="panel-eyebrow">Warehouse operations</span>
+          <h1>Sort Wall</h1>
+          <p>Live capacity, exceptions, and delivery handoffs at a glance.</p>
+        </div>
+      </header>
+
+      <div className="wall-summary" aria-label="Sort wall capacity summary">
+        <div className="wall-summary-card">
+          <strong>{freeCount}</strong>
+          <span>Free holes</span>
+        </div>
+        <div className="wall-summary-card">
+          <strong>{inUseCount}</strong>
+          <span>Being filled</span>
+        </div>
+        <div className="wall-summary-card">
+          <strong>{readyCount}</strong>
+          <span>Ready for pickup</span>
+        </div>
+        <div className="wall-summary-card">
+          <strong>{unavailableCount}</strong>
+          <span>Out of service</span>
+        </div>
+      </div>
 
       <section>
         <h2>Exceptions</h2>

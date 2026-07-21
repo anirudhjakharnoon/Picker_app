@@ -6,6 +6,7 @@
     "build": "npm --prefix app ci && npm --prefix app run build",
     "dev": "npm --prefix app run dev",
     "lint": "npm --prefix app run lint",
+    "test": "npm --prefix app run test",
     "deploy": "wrangler deploy",
     "preview": "wrangler dev"
   },

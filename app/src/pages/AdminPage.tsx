@@ -35,15 +35,28 @@ export function AdminPage() {
   const createOrder = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
-    const { data, error } = await supabase.rpc('admin_create_order_v1', {
+    // p_is_fragile / p_store_name require migration 0005. Send them only when
+    // used so projects that haven't applied 0005 can still create orders with
+    // the original 6-argument function.
+    const isFragile = form.get('fragile') === 'on';
+    const storeName = (form.get('storeName') as string | null)?.trim() || null;
+    const args: Record<string, unknown> = {
       p_store_external_ref: form.get('storeRef'),
       p_bag_count: Number(form.get('bagCount')),
       p_store_floor: form.get('floor') || null,
       p_store_zone: form.get('zone') || null,
       p_store_address: form.get('address') || null,
-    });
+    };
+    if (isFragile) args.p_is_fragile = true;
+    if (storeName) args.p_store_name = storeName;
+
+    const { data, error } = await supabase.rpc('admin_create_order_v1', args);
     if (error) {
-      notify(`Failed: ${error.message}`);
+      notify(
+        (isFragile || storeName)
+          ? `Failed: ${error.message} (the store-name / fragile options need migration 0005_order_fragile.sql)`
+          : `Failed: ${error.message}`
+      );
     } else {
       const order = data as {
         external_order_ref: string;
@@ -134,8 +147,16 @@ export function AdminPage() {
     <div className="admin-screen">
       {toast && <div className="toast">{toast}</div>}
 
+      <header className="panel-heading">
+        <div>
+          <span className="panel-eyebrow">Platform controls</span>
+          <h1>Admin</h1>
+          <p>Create test orders and manage the physical QR setup for this MVP.</p>
+        </div>
+      </header>
+
       {generatedCodes.length > 0 && (
-        <section>
+        <section className="generated-codes">
           <h2>Generated test codes</h2>
           <p className="hint">
             Keep this page open or copy these values. On a scanner screen, tap
@@ -168,26 +189,38 @@ export function AdminPage() {
         <form onSubmit={createOrder}>
           <label>
             Store reference
-            <input name="storeRef" required defaultValue="STORE-DEMO" />
+            <input name="storeRef" required defaultValue="BUFFALO" />
+          </label>
+          <label>
+            Store display name
+            <input name="storeName" defaultValue="Buffalo Burger" />
           </label>
           <label>
             Bag count
-            <input name="bagCount" type="number" min="1" required defaultValue={3} />
+            <input name="bagCount" type="number" min="1" required defaultValue={5} />
           </label>
           <label>
             Floor
-            <input name="floor" defaultValue="2" />
+            <input name="floor" defaultValue="4th" />
           </label>
           <label>
             Zone
-            <input name="zone" defaultValue="North" />
+            <input name="zone" defaultValue="C" />
           </label>
           <label>
             Address
-            <input name="address" defaultValue="12 Market Rd" />
+            <input name="address" defaultValue="Mirdif City Centre, Level 1 - Sheikh Zayed Rd - Dubai" />
+          </label>
+          <label className="checkbox-row">
+            <input name="fragile" type="checkbox" />
+            Fragile items
           </label>
           <button type="submit">Create order</button>
         </form>
+        <p className="hint">
+          Store display name and Fragile items require the optional
+          <code> 0005_order_fragile.sql </code> migration.
+        </p>
       </section>
 
       <section>
