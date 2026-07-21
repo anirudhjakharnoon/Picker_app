@@ -862,7 +862,16 @@ function DropIntoHoleFlow({
             : `Dropped ${dropped}/${expected} bags. Scan only bags for this hole.`}
         </p>
       </div>
-      <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} paused={paused} />
+      {/* A hole QR decode pauses the camera before changing to bag mode. On
+          mobile Safari, attempting to resume that same paused media track
+          can leave a black video element even though no scanner error is
+          reported. Keying by phase deliberately tears down the old scanner
+          and obtains a fresh stream for the bag phase. */}
+      <QrScannerView
+        key={`${phase}-${holeId}`}
+        onDecode={phase === 'verify-hole' ? verifyHole : scanBag}
+        paused={paused}
+      />
     </FullscreenSheet>
   );
 }
