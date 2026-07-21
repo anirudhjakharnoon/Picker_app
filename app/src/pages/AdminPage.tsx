@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useOrders } from '../lib/useOrders';
 import { QrCodePreview } from '../components/QrCodePreview';
 import { WarehouseGateQr } from '../components/WarehouseGateQr';
+import { EyeIcon } from '../components/icons';
 import type { OperationsConfiguration, Profile, PigeonHole, SortWall, Warehouse } from '../types/database';
 
 /**
@@ -25,6 +26,7 @@ export function AdminPage() {
   const [holes, setHoles] = useState<PigeonHole[]>([]);
   const [assigningOrderId, setAssigningOrderId] = useState<string | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState('');
+  const [viewingHole, setViewingHole] = useState<{ hole: PigeonHole; value: string } | null>(null);
 
   const notify = (msg: string) => {
     setToast(msg);
@@ -223,6 +225,23 @@ export function AdminPage() {
   const pickerById = new Map(pickers.map((picker) => [picker.id, picker]));
   const holeById = new Map(holes.map((hole) => [hole.id, hole]));
 
+  const viewHoleQr = async (hole: PigeonHole) => {
+    if (!hole.qr_code_id) {
+      notify('This pigeon hole does not have a QR code yet.');
+      return;
+    }
+    const { data, error } = await supabase
+      .from('qr_codes')
+      .select('code_value')
+      .eq('id', hole.qr_code_id)
+      .maybeSingle();
+    if (error || !data) {
+      notify(`Could not load pigeon-hole QR: ${error?.message ?? 'not found'}`);
+      return;
+    }
+    setViewingHole({ hole, value: (data as { code_value: string }).code_value });
+  };
+
   return (
     <div className="admin-screen">
       {toast && <div className="toast">{toast}</div>}
@@ -398,6 +417,29 @@ export function AdminPage() {
         })}
       </section>
 
+      <section className="admin-pigeon-holes">
+        <h2>Pigeon-hole QR codes</h2>
+        <p className="hint">Tap the eye to view and scan the QR code for a specific pigeon hole.</p>
+        <div className="admin-hole-grid">
+          {holes.map((hole) => (
+            <div className="admin-hole-row" key={hole.id}>
+              <span>
+                <strong>{hole.hole_number}</strong>
+                <small>{hole.status.replace(/_/g, ' ')} · {hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
+              </span>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`Show QR code for pigeon hole ${hole.hole_number}`}
+                onClick={() => void viewHoleQr(hole)}
+              >
+                <EyeIcon />
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <section className="danger-zone">
         <h2>Reset test orders</h2>
         <p className="hint">
@@ -417,6 +459,23 @@ export function AdminPage() {
         Warehouses and sort walls themselves are created directly via SQL (see
         supabase/seed.sql) since that only happens rarely — see app/README.md.
       </p>
+
+      {viewingHole && (
+        <div className="qr-dialog-backdrop" role="presentation" onClick={() => setViewingHole(null)}>
+          <section
+            className="qr-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`QR code for pigeon hole ${viewingHole.hole.hole_number}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button type="button" className="icon-button close" aria-label="Close QR code" onClick={() => setViewingHole(null)}>✕</button>
+            <h2>Pigeon hole {viewingHole.hole.hole_number}</h2>
+            <QrCodePreview value={viewingHole.value} label={`Pigeon hole ${viewingHole.hole.hole_number}`} />
+            <code>{viewingHole.value}</code>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
