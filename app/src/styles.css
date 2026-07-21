@@ -1,0 +1,324 @@
+:root {
+  --bg: #0b0f14;
+  --surface: #151b23;
+  --surface-alt: #1c2530;
+  --border: #2a3441;
+  --text: #e6edf3;
+  --text-dim: #9aa7b5;
+  --accent: #22c55e;
+  --accent-dim: #16a34a;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+button {
+  font-size: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text);
+  cursor: pointer;
+  min-height: 44px; /* large tap targets for field use under time pressure */
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:not(:disabled):hover {
+  border-color: var(--accent);
+}
+
+input,
+select {
+  font-size: 1rem;
+  padding: 0.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+}
+
+h1,
+h2 {
+  margin: 0.25rem 0 0.75rem;
+}
+
+/* --- Auth --- */
+.auth-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+.auth-card {
+  background: var(--surface);
+  padding: 2rem;
+  border-radius: 0.75rem;
+  max-width: 360px;
+  width: 100%;
+  border: 1px solid var(--border);
+}
+.auth-subtitle,
+.auth-footnote {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+.error-text {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+/* --- App shell --- */
+.loading-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  color: var(--text-dim);
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.app-nav-brand {
+  font-weight: 600;
+}
+.app-nav-tabs {
+  display: flex;
+  gap: 0.5rem;
+  flex: 1;
+}
+.app-nav-tabs button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.app-nav-signout {
+  background: transparent;
+}
+
+.app-main {
+  flex: 1;
+  padding: 1rem;
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* --- Generic --- */
+.empty-state {
+  color: var(--text-dim);
+  padding: 1rem 0;
+}
+.toast {
+  background: var(--surface-alt);
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  padding: 0.6rem 1rem;
+  margin-bottom: 1rem;
+}
+.pending-badge {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.hint {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+.back-button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 0.5rem 0;
+}
+
+/* --- Picker --- */
+.picker-screen,
+.sort-wall-screen,
+.admin-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.order-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 1rem;
+  margin-bottom: 0.6rem;
+}
+.order-card.clickable {
+  cursor: pointer;
+}
+.order-card.exception {
+  border-color: var(--danger);
+}
+.status-pill {
+  display: inline-block;
+  font-size: 0.75rem;
+  background: var(--surface-alt);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  margin: 0.25rem 0;
+}
+.cta-banner {
+  width: 100%;
+  background: var(--accent-dim);
+  border: none;
+  color: white;
+  font-weight: 600;
+  padding: 1rem;
+}
+.cta-banner.secondary {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+.scan-counter {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.qr-scanner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.qr-scanner-video-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  background: black;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.qr-scanner-video-wrap video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.qr-scanner-helper {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+.qr-scanner-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.qr-manual-entry {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.scan-success {
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+.success-checkmark {
+  font-size: 5rem;
+  color: var(--accent);
+}
+
+/* --- Sort Wall --- */
+.pigeon-hole-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.6rem;
+}
+.pigeon-hole {
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: var(--surface);
+}
+.pigeon-hole-number {
+  font-weight: 700;
+}
+.pigeon-hole-status {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.pigeon-hole-free {
+  border-color: var(--border);
+}
+.pigeon-hole-reserved {
+  border-color: var(--warning);
+}
+.pigeon-hole-partially_filled {
+  border-color: var(--warning);
+}
+.pigeon-hole-filled {
+  border-color: var(--accent);
+}
+.pigeon-hole-out_of_service {
+  border-color: var(--danger);
+  opacity: 0.7;
+}
+.link-button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  text-decoration: underline;
+  min-height: auto;
+  padding: 0.25rem 0;
+}
+
+@media (max-width: 480px) {
+  .app-nav {
+    flex-wrap: wrap;
+  }
+}
