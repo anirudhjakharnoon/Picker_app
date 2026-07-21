@@ -541,25 +541,34 @@ function PickupFlow({
     const optimisticNext = Math.min(scanned + 1, expected);
     setOptimisticScanned(optimisticNext); // instant feedback, before the network call
 
-    const result = await submitAction('scan_bag_pickup', (clientEventId) => ({
-      p_client_event_id: clientEventId,
-      p_order_id: order.id,
-      p_qr_code_value: value,
-      p_client_captured_at: new Date().toISOString(),
-      p_device_id: navigator.userAgent.slice(0, 64),
-    }));
-    if (!result.ok) {
-      setOptimisticScanned(serverScanned); // revert the optimistic bump
-      notify(`Scan rejected: ${result.error}`);
-      setPaused(false);
-      return;
-    }
+    try {
+      const result = await submitAction('scan_bag_pickup', (clientEventId) => ({
+        p_client_event_id: clientEventId,
+        p_order_id: order.id,
+        p_qr_code_value: value,
+        p_client_captured_at: new Date().toISOString(),
+        p_device_id: navigator.userAgent.slice(0, 64),
+      }));
+      if (!result.ok) {
+        setOptimisticScanned(serverScanned); // revert the optimistic bump
+        notify(`Scan rejected: ${result.error || 'unknown error, please try again'}`);
+        return;
+      }
 
-    const data = result.data as { scanned: number } | undefined;
-    const confirmed = data?.scanned ?? optimisticNext;
-    setOptimisticScanned(confirmed);
-    setPhase(confirmed >= expected ? 'all-collected' : 'collected-one');
-    void refetch();
+      const data = result.data as { scanned?: number } | undefined;
+      const confirmed = typeof data?.scanned === 'number' ? data.scanned : optimisticNext;
+      setOptimisticScanned(confirmed);
+      setPhase(confirmed >= expected ? 'all-collected' : 'collected-one');
+      void refetch();
+    } catch (err) {
+      setOptimisticScanned(serverScanned);
+      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.');
+    } finally {
+      // Every exit path above already leaves `phase` unchanged on failure,
+      // so re-enabling the scanner here is always correct — this is what
+      // guarantees a failed/unexpected scan never leaves the camera stuck.
+      setPaused(false);
+    }
   };
 
   if (phase === 'scanning') {
@@ -678,16 +687,21 @@ function GateScanScreen({
     if (paused) return;
     setPaused(true);
 
-    const result = await submitAction('record_warehouse_arrival', (clientEventId) => ({
-      p_client_event_id: clientEventId,
-      p_gate_qr_value: value,
-      p_order_ids: orderIds,
-      p_client_captured_at: new Date().toISOString(),
-    }));
-    if (result.ok) {
-      completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
-    } else {
-      notify(`Could not record arrival: ${result.error}`);
+    try {
+      const result = await submitAction('record_warehouse_arrival', (clientEventId) => ({
+        p_client_event_id: clientEventId,
+        p_gate_qr_value: value,
+        p_order_ids: orderIds,
+        p_client_captured_at: new Date().toISOString(),
+      }));
+      if (result.ok) {
+        completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
+      } else {
+        notify(`Could not record arrival: ${result.error || 'unknown error, please try again'}`);
+        setPaused(false);
+      }
+    } catch (err) {
+      notify(err instanceof Error ? `Could not record arrival: ${err.message}` : 'Could not record arrival. Please try again.');
       setPaused(false);
     }
   };
@@ -796,58 +810,86 @@ function DropIntoHoleFlow({
   const [dropped, setDropped] = useState(0);
   const [expected, setExpected] = useState(0);
 
+  // Both handlers are wrapped in try/catch and ALWAYS release `paused` (and
+  // therefore the scanner's decode lock) on every exit path, including
+  // completely unexpected ones (a thrown error, a malformed RPC response).
+  // Without this, one unhandled exception here would leave `paused=true`
+  // forever with no error shown — which looks exactly like "scanning the
+  // bag does nothing": the camera keeps running, but every further decode
+  // is silently ignored because decodeLockedRef never gets released.
   const verifyHole = async (value: string) => {
     if (paused) return;
     setPaused(true);
-    const { data, error } = await supabase.rpc('verify_pigeon_hole_v1', {
-      p_order_id: orderId,
-      p_pigeon_hole_qr_value: value,
-    });
-    if (error) {
-      notify(error.message);
+    try {
+      const { data, error } = await supabase.rpc('verify_pigeon_hole_v1', {
+        p_order_id: orderId,
+        p_pigeon_hole_qr_value: value,
+      });
+      if (error) {
+        notify(error.message || 'Could not verify this pigeon hole. Please try again.');
+        return;
+      }
+      const step = data as { hole_id?: string; hole_number?: string; dropped?: number; expected?: number } | null;
+      if (!step || typeof step.hole_id !== 'string') {
+        notify('Unexpected response verifying the pigeon hole. Please try again.');
+        return;
+      }
+      if (step.hole_id !== holeId) {
+        notify('Wrong pigeon hole. Scan the currently unlocked hole for this order.');
+        return;
+      }
+      setHoleQrValue(value);
+      setDropped(step.dropped ?? 0);
+      setExpected(step.expected ?? 0);
+      setPhase('hole-arrived');
+    } catch (err) {
+      notify(err instanceof Error ? `Could not verify hole: ${err.message}` : 'Could not verify hole. Please try again.');
+    } finally {
       setPaused(false);
-      return;
     }
-    const step = data as { hole_id: string; hole_number: string; dropped: number; expected: number };
-    if (step.hole_id !== holeId) {
-      notify('Wrong pigeon hole. Scan the currently unlocked hole for this order.');
-      setPaused(false);
-      return;
-    }
-    setHoleQrValue(value);
-    setDropped(step.dropped);
-    setExpected(step.expected);
-    setPhase('hole-arrived');
-    setPaused(false);
   };
 
   const scanBag = async (value: string) => {
-    if (paused || !holeQrValue) return;
-    setPaused(true);
-    const result = await submitAction('scan_bag_into_pigeon_hole', (clientEventId) => ({
-      p_client_event_id: clientEventId,
-      p_order_id: orderId,
-      p_bag_qr_value: value,
-      p_pigeon_hole_qr_value: holeQrValue,
-      p_client_captured_at: new Date().toISOString(),
-      p_device_id: navigator.userAgent.slice(0, 64),
-    }));
-    if (!result.ok) {
-      notify(
-        result.error === 'Wrong bag, bag does not belong to the hole'
-          ? 'Wrong bag, bag does not belong to the hole'
-          : `Scan rejected: ${result.error}`
-      );
-      setPaused(false);
+    if (paused) return;
+    if (!holeQrValue) {
+      notify('Hole not verified yet — please scan the pigeon hole again.');
       return;
     }
-    const placement = result.data as { dropped: number; expected: number; hole_complete: boolean };
-    setDropped(placement.dropped);
-    setExpected(placement.expected);
-    setPaused(false);
-    setPhase(placement.hole_complete ? 'complete' : 'bag-collected');
-    if (placement.hole_complete) {
-      window.setTimeout(() => void onDone(), 1100);
+    setPaused(true);
+    try {
+      const result = await submitAction('scan_bag_into_pigeon_hole', (clientEventId) => ({
+        p_client_event_id: clientEventId,
+        p_order_id: orderId,
+        p_bag_qr_value: value,
+        p_pigeon_hole_qr_value: holeQrValue,
+        p_client_captured_at: new Date().toISOString(),
+        p_device_id: navigator.userAgent.slice(0, 64),
+      }));
+      if (!result.ok) {
+        notify(
+          result.error === 'Wrong bag, bag does not belong to the hole'
+            ? 'Wrong bag, bag does not belong to the hole'
+            : `Scan rejected: ${result.error || 'unknown error, please try again'}`
+        );
+        return;
+      }
+      const placement = result.data as
+        | { dropped?: number; expected?: number; hole_complete?: boolean }
+        | undefined;
+      if (!placement || typeof placement.dropped !== 'number' || typeof placement.expected !== 'number') {
+        notify('Unexpected response from the server. Please try scanning that bag again.');
+        return;
+      }
+      setDropped(placement.dropped);
+      setExpected(placement.expected);
+      setPhase(placement.hole_complete ? 'complete' : 'bag-collected');
+      if (placement.hole_complete) {
+        window.setTimeout(() => void onDone(), 1100);
+      }
+    } catch (err) {
+      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.');
+    } finally {
+      setPaused(false);
     }
   };
 
