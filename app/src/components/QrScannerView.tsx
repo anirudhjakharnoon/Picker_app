@@ -3,8 +3,13 @@ import QrScanner from 'qr-scanner';
 
 interface QrScannerViewProps {
   onDecode: (value: string) => void;
-  /** Disable scanning (e.g. while a scan is being processed) without tearing
-   * down the camera — avoids the camera-permission re-prompt flicker. */
+  /**
+   * Ignore new decodes while a scan is being processed (e.g. awaiting an
+   * RPC). This deliberately does NOT call the underlying scanner's
+   * pause()/start() — see the comment on the `[paused]` effect below for
+   * why touching the camera stream itself is what caused the "camera turns
+   * solid black and never recovers" bug on real devices.
+   */
   paused?: boolean;
   helperText?: string;
 }
@@ -82,13 +87,25 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
   }, []);
 
   useEffect(() => {
-    if (!scannerRef.current) return;
-    if (paused) {
-      scannerRef.current.pause();
-    } else {
-      decodeLockedRef.current = false;
-      void scannerRef.current.start();
-    }
+    // IMPORTANT: this deliberately never calls scanner.pause()/start().
+    //
+    // qr-scanner's pause() stops rendering the <video> element immediately,
+    // but only stops the actual camera MediaStream after a 300ms grace
+    // period (to avoid a permission-prompt flicker on a quick pause/resume).
+    // Any real scan handler here awaits a network RPC before resuming —
+    // almost always longer than 300ms — so every single scan was silently
+    // hitting that deferred path: the camera stream got fully released,
+    // and the following start() had to re-request getUserMedia from
+    // scratch. On several real Android/iOS browser + OS combinations that
+    // stop-then-immediately-reacquire cycle leaves the <video> rendering
+    // solid black indefinitely with no error surfaced (this exact bug was
+    // reported repeatedly for the hole/bag sorting scan flow, which chains
+    // several scans in a row and so hits the flaky reacquire path harder).
+    //
+    // The camera only ever needs to be requested once per component
+    // mount; "processing the last scan" only needs to gate the JS-level
+    // decode callback, not the hardware camera stream itself.
+    if (!paused) decodeLockedRef.current = false;
   }, [paused]);
 
   const toggleTorch = async () => {
