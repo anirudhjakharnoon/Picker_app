@@ -13,6 +13,9 @@ export function AdminPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [sortWalls, setSortWalls] = useState<SortWall[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [generatedCodes, setGeneratedCodes] = useState<
+    { label: string; value: string }[]
+  >([]);
 
   const notify = (msg: string) => {
     setToast(msg);
@@ -39,8 +42,31 @@ export function AdminPage() {
       p_store_zone: form.get('zone') || null,
       p_store_address: form.get('address') || null,
     });
-    if (error) notify(`Failed: ${error.message}`);
-    else notify(`Created order ${(data as { external_order_ref: string }).external_order_ref}`);
+    if (error) {
+      notify(`Failed: ${error.message}`);
+    } else {
+      const order = data as {
+        external_order_ref: string;
+        shared_bag_qr_code_id: string | null;
+      };
+      notify(`Created order ${order.external_order_ref}`);
+      if (order.shared_bag_qr_code_id) {
+        const { data: qr } = await supabase
+          .from('qr_codes')
+          .select('code_value')
+          .eq('id', order.shared_bag_qr_code_id)
+          .single();
+        if (qr) {
+          setGeneratedCodes((current) => [
+            {
+              label: `Bag code for ${order.external_order_ref} (same code on every bag)`,
+              value: (qr as { code_value: string }).code_value,
+            },
+            ...current,
+          ]);
+        }
+      }
+    }
     e.currentTarget.reset();
   };
 
@@ -52,8 +78,38 @@ export function AdminPage() {
       p_count: Number(form.get('count')),
       p_prefix: form.get('prefix') || 'P',
     });
-    if (error) notify(`Failed: ${error.message}`);
-    else notify(`Created ${(data as unknown[])?.length ?? 0} pigeon holes`);
+    if (error) {
+      notify(`Failed: ${error.message}`);
+    } else {
+      const holes = (data as { hole_number: string; qr_code_id: string | null }[]) ?? [];
+      notify(`Created ${holes.length} pigeon holes`);
+      const qrIds = holes.flatMap((hole) => (hole.qr_code_id ? [hole.qr_code_id] : []));
+      if (qrIds.length > 0) {
+        const { data: qrRows } = await supabase
+          .from('qr_codes')
+          .select('id, code_value')
+          .in('id', qrIds);
+        const codeById = new Map(
+          ((qrRows as { id: string; code_value: string }[] | null) ?? []).map((qr) => [
+            qr.id,
+            qr.code_value,
+          ])
+        );
+        setGeneratedCodes((current) => [
+          ...holes.flatMap((hole) =>
+            hole.qr_code_id && codeById.has(hole.qr_code_id)
+              ? [
+                  {
+                    label: `Pigeon hole ${hole.hole_number}`,
+                    value: codeById.get(hole.qr_code_id)!,
+                  },
+                ]
+              : []
+          ),
+          ...current,
+        ]);
+      }
+    }
   };
 
   const createGate = async (e: FormEvent<HTMLFormElement>) => {
@@ -62,13 +118,46 @@ export function AdminPage() {
     const { data, error } = await supabase.rpc('admin_create_warehouse_gate_v1', {
       p_warehouse_id: form.get('warehouseId'),
     });
-    if (error) notify(`Failed: ${error.message}`);
-    else notify(`Gate code created: ${(data as { code_value: string }).code_value}`);
+    if (error) {
+      notify(`Failed: ${error.message}`);
+    } else {
+      const value = (data as { code_value: string }).code_value;
+      notify(`Gate code created: ${value}`);
+      setGeneratedCodes((current) => [
+        { label: 'Warehouse gate code', value },
+        ...current,
+      ]);
+    }
   };
 
   return (
     <div className="admin-screen">
       {toast && <div className="toast">{toast}</div>}
+
+      {generatedCodes.length > 0 && (
+        <section>
+          <h2>Generated test codes</h2>
+          <p className="hint">
+            Keep this page open or copy these values. On a scanner screen, tap
+            &quot;Can&apos;t scan? Enter code manually&quot; and paste the matching value.
+          </p>
+          {generatedCodes.map((code, index) => (
+            <div className="generated-code" key={`${code.label}-${index}`}>
+              <strong>{code.label}</strong>
+              <code>{code.value}</code>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(code.value);
+                  notify('Code copied.');
+                }}
+              >
+                Copy
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section>
         <h2>Create test order</h2>

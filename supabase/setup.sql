@@ -1,0 +1,1827 @@
+-- ============================================================================
+-- GENERATED FILE — beginner one-click Supabase setup
+--
+-- Paste this entire file into Supabase Dashboard > SQL Editor > New query,
+-- then click Run. The numbered files in supabase/migrations/ are the source
+-- of truth; regenerate this file with:
+--   node scripts/build-supabase-setup.mjs
+--
+-- Generated from:
+--   - 0001_schema.sql
+--   - 0002_rls.sql
+--   - 0003_functions.sql
+--   - 0004_security_hardening.sql
+-- ============================================================================
+
+
+-- ======================== BEGIN 0001_schema.sql ========================
+
+-- ============================================================================
+-- 0001_schema.sql
+-- Core MVP schema for the Picker / Sort Wall platform.
+-- Free-tier (Supabase Free) scope: relational schema only, no paid extensions.
+-- See docs/TECHNICAL_DESIGN_DOCUMENT.md Section 5 for the full rationale.
+-- ============================================================================
+
+create extension if not exists "pgcrypto";
+
+-- ----------------------------------------------------------------------------
+-- Enums
+-- ----------------------------------------------------------------------------
+
+create type user_role as enum ('picker', 'warehouse_staff', 'ops_manager', 'admin');
+create type user_status as enum ('active', 'suspended', 'offboarded');
+
+create type store_status as enum ('active', 'paused', 'offboarded');
+
+create type qr_code_type as enum ('bag', 'pigeon_hole', 'warehouse_gate');
+create type qr_code_status as enum ('active', 'revoked', 'expired');
+create type qr_mode as enum ('shared_order', 'unique_bag');
+
+create type order_status as enum (
+  'ingested',
+  'available',
+  'assigned',
+  'picking_in_progress',
+  'picked',
+  'in_transit_to_warehouse',
+  'arrived_at_warehouse',
+  'sorting_in_progress',
+  'sorted',
+  'ready_for_dispatch',
+  'delivery_assigned',
+  'dispatched',
+  'completed',
+  'cancelled',
+  'exception_missing_bag',
+  'exception_partial_sort'
+);
+
+create type order_bag_status as enum (
+  'expected', 'picked_up', 'sorted', 'dispatched', 'missing', 'lost'
+);
+
+create type sort_wall_status as enum ('active', 'inactive');
+create type pigeon_hole_status as enum (
+  'free', 'reserved', 'partially_filled', 'filled', 'out_of_service'
+);
+create type pigeon_hole_assignment_status as enum (
+  'reserved', 'active', 'freed', 'reallocated'
+);
+
+create type scan_type as enum ('pickup', 'warehouse_arrival', 'sort', 'manual_correction');
+create type scanned_entity_type as enum ('bag', 'pigeon_hole', 'warehouse_gate');
+
+create type status_history_entity_type as enum (
+  'order', 'order_bag', 'pigeon_hole', 'picker_assignment', 'delivery_assignment'
+);
+
+create type notification_channel as enum ('in_app', 'web_push');
+create type notification_status as enum ('queued', 'sent', 'delivered', 'read', 'failed');
+
+create type delivery_assignment_status as enum (
+  'assigned', 'accepted', 'arrived', 'collected', 'delivered', 'failed', 'reassigned'
+);
+
+-- ----------------------------------------------------------------------------
+-- Warehouses / Sort Walls / Pigeon Holes
+-- ----------------------------------------------------------------------------
+
+create table warehouses (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  address text,
+  status sort_wall_status not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table sort_walls (
+  id uuid primary key default gen_random_uuid(),
+  warehouse_id uuid not null references warehouses(id) on delete cascade,
+  name text not null,
+  rows smallint not null default 1,
+  columns smallint not null default 1,
+  status sort_wall_status not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index sort_walls_warehouse_id_idx on sort_walls(warehouse_id);
+
+-- ----------------------------------------------------------------------------
+-- QR codes (generic registry: bag / pigeon_hole / warehouse_gate)
+-- ----------------------------------------------------------------------------
+
+create table qr_codes (
+  id uuid primary key default gen_random_uuid(),
+  code_type qr_code_type not null,
+  code_value text not null,
+  code_version smallint not null default 1,
+  entity_id uuid, -- polymorphic: orders.id (shared v1), order_bags.id (future), pigeon_holes.id, warehouses.id
+  status qr_code_status not null default 'active',
+  expires_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint qr_codes_code_value_key unique (code_value)
+);
+create index qr_codes_type_entity_idx on qr_codes(code_type, entity_id);
+
+create table pigeon_holes (
+  id uuid primary key default gen_random_uuid(),
+  sort_wall_id uuid not null references sort_walls(id) on delete cascade,
+  hole_number text not null,
+  qr_code_id uuid references qr_codes(id),
+  status pigeon_hole_status not null default 'free',
+  priority_reserved boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint pigeon_holes_wall_number_key unique (sort_wall_id, hole_number)
+);
+create index pigeon_holes_status_idx on pigeon_holes(status);
+create index pigeon_holes_wall_idx on pigeon_holes(sort_wall_id);
+
+-- NOTE: qr_codes.entity_id is intentionally polymorphic (order, order_bag,
+-- pigeon_hole, or warehouse depending on code_type) and therefore has no
+-- single foreign key constraint. Referential integrity for entity_id is
+-- enforced in application/RPC code, not the schema, by design (Section 5.3.4
+-- of docs/TECHNICAL_DESIGN_DOCUMENT.md).
+
+-- ----------------------------------------------------------------------------
+-- Profiles (extends auth.users) — role & warehouse scope live here, never in
+-- client-editable auth metadata.
+-- ----------------------------------------------------------------------------
+
+create table profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text not null,
+  full_name text,
+  role user_role not null default 'picker',
+  status user_status not null default 'active',
+  warehouse_id uuid references warehouses(id),
+  is_online boolean not null default false,
+  current_lat double precision,
+  current_lng double precision,
+  home_zone text,
+  max_concurrent_orders smallint not null default 3,
+  is_super_admin boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index profiles_role_idx on profiles(role);
+create index profiles_online_idx on profiles(is_online) where is_online = true;
+create index profiles_warehouse_idx on profiles(warehouse_id);
+
+-- ----------------------------------------------------------------------------
+-- Stores / Orders / Order Bags
+-- ----------------------------------------------------------------------------
+
+create table stores (
+  id uuid primary key default gen_random_uuid(),
+  external_ref text not null unique,
+  name text not null,
+  default_zone text,
+  status store_status not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table orders (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid not null references stores(id),
+  external_order_ref text not null,
+  bag_count_expected smallint not null check (bag_count_expected > 0),
+  bag_count_scanned_pickup smallint not null default 0,
+  bag_count_scanned_sort smallint not null default 0,
+  store_floor text,
+  store_zone text,
+  store_address text,
+  qr_mode qr_mode not null default 'shared_order',
+  shared_bag_qr_code_id uuid references qr_codes(id),
+  status order_status not null default 'ingested',
+  assigned_picker_id uuid references profiles(id),
+  warehouse_id uuid references warehouses(id),
+  sort_wall_id uuid references sort_walls(id),
+  pigeon_hole_id uuid references pigeon_holes(id),
+  priority smallint not null default 0,
+  packed_ready_at timestamptz,
+  ingested_at timestamptz not null default now(),
+  assigned_at timestamptz,
+  picked_at timestamptz,
+  warehouse_arrived_at timestamptz,
+  sorted_at timestamptz,
+  dispatched_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint orders_store_external_ref_key unique (store_id, external_order_ref)
+);
+create index orders_status_idx on orders(status);
+create index orders_assigned_picker_idx on orders(assigned_picker_id);
+create index orders_warehouse_idx on orders(warehouse_id);
+create index orders_status_ingested_idx on orders(status, ingested_at);
+
+create table order_bags (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references orders(id) on delete cascade,
+  bag_sequence smallint not null,
+  status order_bag_status not null default 'expected',
+  qr_code_id uuid references qr_codes(id),
+  picked_up_at timestamptz,
+  sorted_at timestamptz,
+  dispatched_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint order_bags_order_sequence_key unique (order_id, bag_sequence)
+);
+create index order_bags_order_idx on order_bags(order_id);
+create index order_bags_status_idx on order_bags(status);
+
+-- ----------------------------------------------------------------------------
+-- Bag scans (immutable event log — never updated after insert)
+-- ----------------------------------------------------------------------------
+
+create table bag_scans (
+  id uuid primary key default gen_random_uuid(),
+  client_event_id uuid not null unique,
+  order_id uuid not null references orders(id),
+  order_bag_id uuid references order_bags(id),
+  qr_code_id uuid references qr_codes(id),
+  pigeon_hole_id uuid references pigeon_holes(id),
+  scan_type scan_type not null,
+  scanned_entity_type scanned_entity_type not null,
+  actor_user_id uuid not null references profiles(id),
+  device_id text,
+  gps_lat double precision,
+  gps_lng double precision,
+  client_captured_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  is_valid boolean not null default true,
+  rejection_reason text
+);
+create index bag_scans_order_idx on bag_scans(order_id);
+create index bag_scans_actor_idx on bag_scans(actor_user_id);
+create index bag_scans_type_created_idx on bag_scans(scan_type, created_at);
+
+-- ----------------------------------------------------------------------------
+-- Pigeon hole assignments (order <-> hole reservation lifecycle)
+-- ----------------------------------------------------------------------------
+
+create table pigeon_hole_assignments (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references orders(id),
+  pigeon_hole_id uuid not null references pigeon_holes(id),
+  status pigeon_hole_assignment_status not null default 'reserved',
+  reserved_at timestamptz not null default now(),
+  filled_at timestamptz,
+  freed_at timestamptz,
+  reallocated_from_id uuid references pigeon_hole_assignments(id)
+);
+create index pha_pigeon_hole_idx on pigeon_hole_assignments(pigeon_hole_id);
+create index pha_order_idx on pigeon_hole_assignments(order_id);
+create index pha_status_idx on pigeon_hole_assignments(status);
+-- Only one active reservation per order at a time.
+create unique index pha_one_active_per_order
+  on pigeon_hole_assignments(order_id)
+  where status in ('reserved', 'active');
+
+-- ----------------------------------------------------------------------------
+-- Delivery partners / assignments (manual-only in the free MVP)
+-- ----------------------------------------------------------------------------
+
+create table delivery_partners (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  status store_status not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table delivery_assignments (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references orders(id),
+  delivery_partner_id uuid references delivery_partners(id),
+  status delivery_assignment_status not null default 'assigned',
+  assigned_by_user_id uuid references profiles(id),
+  is_force_assigned boolean not null default false,
+  notes text,
+  assigned_at timestamptz not null default now(),
+  collected_at timestamptz,
+  delivered_at timestamptz
+);
+create index da_order_idx on delivery_assignments(order_id);
+create index da_status_idx on delivery_assignments(status);
+
+-- ----------------------------------------------------------------------------
+-- Status history (polymorphic audit trail) & Audit logs (admin/config actions)
+-- ----------------------------------------------------------------------------
+
+create table status_history (
+  id uuid primary key default gen_random_uuid(),
+  entity_type status_history_entity_type not null,
+  entity_id uuid not null,
+  from_status text,
+  to_status text not null,
+  actor_type text not null default 'system' check (actor_type in ('system', 'user')),
+  actor_user_id uuid references profiles(id),
+  reason text,
+  created_at timestamptz not null default now()
+);
+create index status_history_entity_idx on status_history(entity_type, entity_id, created_at);
+
+create table audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  actor_user_id uuid references profiles(id),
+  action text not null,
+  target_type text,
+  target_id uuid,
+  metadata jsonb,
+  created_at timestamptz not null default now()
+);
+create index audit_logs_actor_idx on audit_logs(actor_user_id);
+create index audit_logs_target_idx on audit_logs(target_type, target_id);
+
+-- ----------------------------------------------------------------------------
+-- Notifications (durable in-app inbox — no paid provider in free MVP)
+-- ----------------------------------------------------------------------------
+
+create table notifications (
+  id uuid primary key default gen_random_uuid(),
+  recipient_user_id uuid not null references profiles(id),
+  channel notification_channel not null default 'in_app',
+  template text not null,
+  payload jsonb not null default '{}'::jsonb,
+  status notification_status not null default 'queued',
+  created_at timestamptz not null default now(),
+  read_at timestamptz
+);
+create index notifications_recipient_unread_idx
+  on notifications(recipient_user_id, created_at)
+  where read_at is null;
+
+-- ----------------------------------------------------------------------------
+-- updated_at maintenance trigger (generic, reused by every table with the column)
+-- ----------------------------------------------------------------------------
+
+create or replace function set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+do $$
+declare
+  t text;
+begin
+  for t in select unnest(array[
+    'warehouses','sort_walls','pigeon_holes','profiles','stores',
+    'orders','order_bags'
+  ]) loop
+    execute format(
+      'create trigger set_updated_at before update on %I for each row execute function set_updated_at()',
+      t
+    );
+  end loop;
+end $$;
+
+-- ========================= END 0001_schema.sql =========================
+
+
+-- ======================== BEGIN 0002_rls.sql ========================
+
+-- ============================================================================
+-- 0002_rls.sql
+-- Row Level Security. RLS is the actual backend authorization boundary for
+-- this app (the PWA talks to Supabase directly with only the public anon
+-- key) — see docs/TECHNICAL_DESIGN_DOCUMENT.md Section 11.6.
+--
+-- Default posture: RLS enabled on every table, no anonymous access, no
+-- direct client mutation of state-machine tables (those go through the
+-- SECURITY DEFINER RPC functions in 0003_functions.sql instead).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- Helper functions (STABLE, SECURITY INVOKER — read only the caller's own
+-- profile row, which is exactly what RLS on `profiles` already permits).
+-- ----------------------------------------------------------------------------
+
+create or replace function auth_role()
+returns user_role
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select role from profiles where id = auth.uid();
+$$;
+
+create or replace function auth_warehouse_id()
+returns uuid
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select warehouse_id from profiles where id = auth.uid();
+$$;
+
+create or replace function auth_is_ops_or_admin()
+returns boolean
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select coalesce(auth_role() in ('ops_manager', 'admin'), false);
+$$;
+
+create or replace function auth_is_warehouse_role()
+returns boolean
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select coalesce(auth_role() in ('warehouse_staff', 'ops_manager', 'admin'), false);
+$$;
+
+create or replace function auth_is_admin()
+returns boolean
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select coalesce(auth_role() = 'admin', false);
+$$;
+
+-- ----------------------------------------------------------------------------
+-- Enable RLS everywhere
+-- ----------------------------------------------------------------------------
+
+alter table warehouses enable row level security;
+alter table sort_walls enable row level security;
+alter table pigeon_holes enable row level security;
+alter table qr_codes enable row level security;
+alter table profiles enable row level security;
+alter table stores enable row level security;
+alter table orders enable row level security;
+alter table order_bags enable row level security;
+alter table bag_scans enable row level security;
+alter table pigeon_hole_assignments enable row level security;
+alter table delivery_partners enable row level security;
+alter table delivery_assignments enable row level security;
+alter table status_history enable row level security;
+alter table audit_logs enable row level security;
+alter table notifications enable row level security;
+
+-- ----------------------------------------------------------------------------
+-- profiles
+-- ----------------------------------------------------------------------------
+
+create policy profiles_select_own
+  on profiles for select
+  using (id = auth.uid() or auth_is_ops_or_admin());
+
+create policy profiles_update_own_presence
+  on profiles for update
+  using (id = auth.uid())
+  with check (id = auth.uid());
+-- NOTE: this policy allows a picker to update their own row (e.g. is_online,
+-- current_lat/lng, home_zone). It intentionally does NOT allow a user to
+-- change their own `role`, `is_super_admin`, or `warehouse_id` — those are
+-- blocked by application code (Section 12.5: admin-only, dashboard/RPC-only)
+-- until a dedicated role-change RPC with server-side checks exists.
+
+-- ----------------------------------------------------------------------------
+-- warehouses / sort_walls / pigeon_holes — read scoped by warehouse, no
+-- direct client writes (configuration changes go through Admin RPCs later).
+-- ----------------------------------------------------------------------------
+
+create policy warehouses_select
+  on warehouses for select
+  using (
+    auth_is_admin()
+    or id = auth_warehouse_id()
+  );
+
+create policy sort_walls_select
+  on sort_walls for select
+  using (
+    auth_is_admin()
+    or warehouse_id = auth_warehouse_id()
+  );
+
+create policy pigeon_holes_select
+  on pigeon_holes for select
+  using (
+    auth_is_admin()
+    or sort_wall_id in (select id from sort_walls where warehouse_id = auth_warehouse_id())
+    -- Pickers must also see holes for the warehouse they are currently
+    -- delivering to, even if their profile's home warehouse differs.
+    or sort_wall_id in (
+      select o.sort_wall_id from orders o
+      where o.assigned_picker_id = auth.uid() and o.sort_wall_id is not null
+    )
+  );
+
+-- ----------------------------------------------------------------------------
+-- qr_codes — never directly writable by clients; readable only insofar as a
+-- picker/staff member needs to validate a scan client-side. We deliberately
+-- keep this narrow: pickers can only read codes tied to their own assigned
+-- orders or to pigeon holes in their current warehouse context.
+-- ----------------------------------------------------------------------------
+
+create policy qr_codes_select
+  on qr_codes for select
+  using (
+    auth_is_admin()
+    or (
+      code_type = 'bag'
+      and entity_id in (select id from orders where assigned_picker_id = auth.uid())
+    )
+    or (
+      code_type = 'pigeon_hole'
+      and entity_id in (
+        select ph.id from pigeon_holes ph
+        join sort_walls sw on sw.id = ph.sort_wall_id
+        where sw.warehouse_id = auth_warehouse_id()
+           or ph.sort_wall_id in (
+             select o.sort_wall_id from orders o
+             where o.assigned_picker_id = auth.uid() and o.sort_wall_id is not null
+           )
+      )
+    )
+    or (code_type = 'warehouse_gate' and auth_role() is not null)
+  );
+
+-- ----------------------------------------------------------------------------
+-- stores — read-only for warehouse/ops/admin roles (needed for order context)
+-- ----------------------------------------------------------------------------
+
+create policy stores_select
+  on stores for select
+  using (auth_is_warehouse_role() or auth_role() = 'picker');
+
+-- ----------------------------------------------------------------------------
+-- orders — the central authorization surface.
+-- Picker: only their own currently assigned orders (or ones they historically
+--         handled, so their own history remains visible after handoff).
+-- Warehouse staff / ops: orders routed to their warehouse.
+-- Admin: everything.
+-- ----------------------------------------------------------------------------
+
+create policy orders_select
+  on orders for select
+  using (
+    auth_is_admin()
+    or assigned_picker_id = auth.uid()
+    or (auth_role() = 'picker' and status = 'available') -- unassigned offers a picker can accept
+    or (auth_is_warehouse_role() and warehouse_id = auth_warehouse_id())
+    or (auth_is_warehouse_role() and warehouse_id is null) -- not yet routed to a warehouse; ops needs visibility to triage
+  );
+
+-- No direct insert/update/delete policies on `orders` for any client role.
+-- All order state transitions go through SECURITY DEFINER RPCs so that the
+-- state machine (Section 6) and single-active-hole-reservation invariants
+-- can never be bypassed by a raw table write from the browser.
+
+-- ----------------------------------------------------------------------------
+-- order_bags — read scoped the same way as their parent order.
+-- ----------------------------------------------------------------------------
+
+create policy order_bags_select
+  on order_bags for select
+  using (
+    auth_is_admin()
+    or order_id in (select id from orders where assigned_picker_id = auth.uid())
+    or (auth_is_warehouse_role() and order_id in (
+      select id from orders where warehouse_id = auth_warehouse_id()
+    ))
+  );
+
+-- ----------------------------------------------------------------------------
+-- bag_scans — pickers/staff may read their own scans and scans for orders
+-- they can see; no direct insert (must go through scan_bag_v1 RPC).
+-- ----------------------------------------------------------------------------
+
+create policy bag_scans_select
+  on bag_scans for select
+  using (
+    auth_is_admin()
+    or actor_user_id = auth.uid()
+    or order_id in (select id from orders where assigned_picker_id = auth.uid())
+    or (auth_is_warehouse_role() and order_id in (
+      select id from orders where warehouse_id = auth_warehouse_id()
+    ))
+  );
+
+-- ----------------------------------------------------------------------------
+-- pigeon_hole_assignments — read scoped like pigeon_holes.
+-- ----------------------------------------------------------------------------
+
+create policy pha_select
+  on pigeon_hole_assignments for select
+  using (
+    auth_is_admin()
+    or pigeon_hole_id in (
+      select ph.id from pigeon_holes ph
+      join sort_walls sw on sw.id = ph.sort_wall_id
+      where sw.warehouse_id = auth_warehouse_id()
+    )
+    or order_id in (select id from orders where assigned_picker_id = auth.uid())
+  );
+
+-- ----------------------------------------------------------------------------
+-- delivery_partners / delivery_assignments — warehouse-role read; mutations
+-- via RPC only (force-assign must be audited).
+-- ----------------------------------------------------------------------------
+
+create policy delivery_partners_select
+  on delivery_partners for select
+  using (auth_is_warehouse_role());
+
+create policy delivery_assignments_select
+  on delivery_assignments for select
+  using (
+    auth_is_admin()
+    or order_id in (select id from orders where warehouse_id = auth_warehouse_id())
+  );
+
+-- ----------------------------------------------------------------------------
+-- status_history — read scoped like the underlying order; never client-writable.
+-- ----------------------------------------------------------------------------
+
+create policy status_history_select
+  on status_history for select
+  using (
+    auth_is_admin()
+    or (
+      entity_type = 'order'
+      and entity_id in (
+        select id from orders
+        where assigned_picker_id = auth.uid()
+           or (auth_is_warehouse_role() and warehouse_id = auth_warehouse_id())
+      )
+    )
+    or auth_is_warehouse_role()
+  );
+
+-- ----------------------------------------------------------------------------
+-- audit_logs — ops/admin read-only; never updatable/deletable by anyone
+-- (no update/delete policy exists at all, which means RLS denies it by
+-- default even for the table owner via PostgREST/anon+authenticated roles).
+-- ----------------------------------------------------------------------------
+
+create policy audit_logs_select
+  on audit_logs for select
+  using (auth_is_ops_or_admin());
+
+-- ----------------------------------------------------------------------------
+-- notifications — a user can only see and mark-read their own notifications.
+-- ----------------------------------------------------------------------------
+
+create policy notifications_select_own
+  on notifications for select
+  using (recipient_user_id = auth.uid());
+
+create policy notifications_update_own_read
+  on notifications for update
+  using (recipient_user_id = auth.uid())
+  with check (recipient_user_id = auth.uid());
+
+-- ========================= END 0002_rls.sql =========================
+
+
+-- ======================== BEGIN 0003_functions.sql ========================
+
+-- ============================================================================
+-- 0003_functions.sql
+-- Transactional business logic as Postgres RPC functions.
+--
+-- All correctness-critical, multi-step operations (scans, hole allocation,
+-- assignment acceptance) live here as SECURITY DEFINER functions rather than
+-- being assembled from several raw client-side table writes. Each function:
+--   - validates the caller's role/ownership explicitly (never trusts the
+--     client to only call it "correctly"),
+--   - sets a safe search_path (defends against search_path hijacking),
+--   - performs its state transition + status_history/audit row in one
+--     transaction, and
+--   - is versioned by name (`_v1`) so a future breaking change ships as
+--     `_v2` without invalidating an already-open cached client tab
+--     (docs/TECHNICAL_DESIGN_DOCUMENT.md Section 7.1).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- Auto-provision a profile row whenever an Auth user is created.
+-- The account itself is still created by a trusted Admin (Supabase Dashboard
+-- or, later, an Edge Function using the service-role key) — this trigger
+-- only saves the manual "insert into profiles" step. Role defaults to
+-- 'picker' and MUST be corrected by an Admin after creation; it is
+-- intentionally not settable by the new user themselves.
+-- ----------------------------------------------------------------------------
+
+create or replace function handle_new_auth_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  insert into profiles (id, email, full_name, role, status)
+  values (
+    new.id,
+    new.email,
+    coalesce(new.raw_user_meta_data->>'full_name', new.email),
+    'picker',
+    'active'
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_auth_user();
+
+-- ----------------------------------------------------------------------------
+-- set_picker_status_v1 — online/offline toggle + optional location ping.
+-- ----------------------------------------------------------------------------
+
+create or replace function set_picker_status_v1(
+  p_is_online boolean,
+  p_lat double precision default null,
+  p_lng double precision default null
+)
+returns profiles
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_profile profiles;
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated' using errcode = '28000';
+  end if;
+
+  update profiles
+  set is_online = p_is_online,
+      current_lat = coalesce(p_lat, current_lat),
+      current_lng = coalesce(p_lng, current_lng),
+      updated_at = now()
+  where id = auth.uid()
+  returning * into v_profile;
+
+  if v_profile is null then
+    raise exception 'profile not found for current user';
+  end if;
+
+  return v_profile;
+end;
+$$;
+
+grant execute on function set_picker_status_v1(boolean, double precision, double precision) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- accept_order_v1 — atomic, race-safe assignment acceptance
+-- (docs Section 3.3 / 6.1: AVAILABLE -> ASSIGNED, WHERE assigned_picker_id IS NULL)
+-- ----------------------------------------------------------------------------
+
+create or replace function accept_order_v1(p_order_id uuid)
+returns orders
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+  v_caller_role user_role;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  if v_caller_role is distinct from 'picker' then
+    raise exception 'only pickers can accept orders' using errcode = '42501';
+  end if;
+
+  update orders
+  set status = 'assigned',
+      assigned_picker_id = auth.uid(),
+      assigned_at = now(),
+      updated_at = now()
+  where id = p_order_id
+    and status = 'available'
+    and assigned_picker_id is null
+  returning * into v_order;
+
+  if v_order is null then
+    raise exception 'order already assigned or not available' using errcode = '40001';
+  end if;
+
+  insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id)
+  values ('order', p_order_id, 'available', 'assigned', 'user', auth.uid());
+
+  return v_order;
+end;
+$$;
+
+grant execute on function accept_order_v1(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- decline_order_v1 — picker explicitly declines an offer assigned to them
+-- (only meaningful once an assignment model pushes offers directly; kept for
+-- forward-compatibility with docs Section 3.3).
+-- ----------------------------------------------------------------------------
+
+create or replace function decline_order_v1(p_order_id uuid)
+returns orders
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+begin
+  update orders
+  set status = 'available',
+      assigned_picker_id = null,
+      assigned_at = null,
+      updated_at = now()
+  where id = p_order_id
+    and assigned_picker_id = auth.uid()
+    and status = 'assigned'
+  returning * into v_order;
+
+  if v_order is null then
+    raise exception 'order not found or not assigned to caller';
+  end if;
+
+  insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id, reason)
+  values ('order', p_order_id, 'assigned', 'available', 'user', auth.uid(), 'declined by picker');
+
+  return v_order;
+end;
+$$;
+
+grant execute on function decline_order_v1(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- scan_bag_pickup_v1 — records a PICKUP scan against the shared order-level
+-- QR code. Each valid scan claims the next EXPECTED logical bag slot until
+-- bag_count_expected is reached (docs Section 3.4/9.1: this proves M scan
+-- actions against the correct order code, NOT M distinct physical bags).
+-- ----------------------------------------------------------------------------
+
+create or replace function scan_bag_pickup_v1(
+  p_client_event_id uuid,
+  p_order_id uuid,
+  p_qr_code_value text,
+  p_client_captured_at timestamptz,
+  p_gps_lat double precision default null,
+  p_gps_lng double precision default null,
+  p_device_id text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+  v_qr qr_codes;
+  v_bag order_bags;
+  v_existing bag_scans;
+begin
+  -- Idempotency: a retried request with the same client_event_id returns the
+  -- original result rather than creating a second event or double-counting.
+  -- NOTE: bag_scans has several nullable columns (order_bag_id, qr_code_id,
+  -- pigeon_hole_id, gps_lat/lng, ...), so a composite-row `IS NOT NULL` check
+  -- would be wrong here: for a row type, `IS NOT NULL` only evaluates true
+  -- when EVERY field is non-null, not "a row was found" (PL/pgSQL row-value
+  -- NULL semantics follow the SQL standard's row comparison rules, not
+  -- "was this SELECT INTO populated"). We check the non-nullable primary
+  -- key column instead, which is always non-null exactly when a row exists.
+  select * into v_existing from bag_scans where client_event_id = p_client_event_id;
+  if v_existing.id is not null then
+    select * into v_order from orders where id = v_existing.order_id;
+    return jsonb_build_object(
+      'order_bag_id', v_existing.order_bag_id,
+      'scanned', v_order.bag_count_scanned_pickup,
+      'expected', v_order.bag_count_expected,
+      'order_status', v_order.status,
+      'idempotent_replay', true
+    );
+  end if;
+
+  select * into v_order from orders where id = p_order_id for update;
+  if v_order is null then
+    raise exception 'order not found' using errcode = 'P0002';
+  end if;
+  if v_order.assigned_picker_id is distinct from auth.uid() then
+    raise exception 'order not assigned to caller' using errcode = '42501';
+  end if;
+  if v_order.status not in ('assigned', 'picking_in_progress') then
+    raise exception 'order is not in a pickable state (status=%)', v_order.status using errcode = '40001';
+  end if;
+
+  select * into v_qr from qr_codes where code_value = p_qr_code_value and status = 'active';
+  if v_qr is null then
+    raise exception 'qr code not recognized or inactive' using errcode = 'P0002';
+  end if;
+  if v_qr.code_type <> 'bag' or v_qr.entity_id <> v_order.id then
+    raise exception 'qr code does not belong to this order' using errcode = '40001';
+  end if;
+
+  if v_order.bag_count_scanned_pickup >= v_order.bag_count_expected then
+    raise exception 'expected bag count already reached' using errcode = '40001';
+  end if;
+
+  -- Claim the next EXPECTED logical bag slot, locked against concurrent scans.
+  select * into v_bag
+  from order_bags
+  where order_id = p_order_id and status = 'expected'
+  order by bag_sequence
+  limit 1
+  for update skip locked;
+
+  if v_bag is null then
+    raise exception 'no remaining expected bag slots for this order' using errcode = '40001';
+  end if;
+
+  update order_bags
+  set status = 'picked_up', picked_up_at = now(), updated_at = now()
+  where id = v_bag.id;
+
+  insert into bag_scans (
+    client_event_id, order_id, order_bag_id, qr_code_id,
+    scan_type, scanned_entity_type, actor_user_id,
+    device_id, gps_lat, gps_lng, client_captured_at
+  ) values (
+    p_client_event_id, p_order_id, v_bag.id, v_qr.id,
+    'pickup', 'bag', auth.uid(),
+    p_device_id, p_gps_lat, p_gps_lng, p_client_captured_at
+  );
+
+  update orders
+  set bag_count_scanned_pickup = bag_count_scanned_pickup + 1,
+      status = case
+        when bag_count_scanned_pickup + 1 >= bag_count_expected then 'picked'::order_status
+        else 'picking_in_progress'::order_status
+      end,
+      picked_at = case
+        when bag_count_scanned_pickup + 1 >= bag_count_expected then now()
+        else picked_at
+      end,
+      updated_at = now()
+  where id = p_order_id
+  returning * into v_order;
+
+  if v_order.status = 'picked' then
+    insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id)
+    values ('order', p_order_id, 'picking_in_progress', 'picked', 'system', auth.uid());
+  end if;
+
+  return jsonb_build_object(
+    'order_bag_id', v_bag.id,
+    'bag_sequence', v_bag.bag_sequence,
+    'scanned', v_order.bag_count_scanned_pickup,
+    'expected', v_order.bag_count_expected,
+    'order_status', v_order.status,
+    'idempotent_replay', false
+  );
+end;
+$$;
+
+grant execute on function scan_bag_pickup_v1(uuid, uuid, text, timestamptz, double precision, double precision, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- scan_bag_for_sort_v1 — during sorting, scanning the bag reveals which
+-- pigeon hole it must go to (does not itself change bag/order state).
+-- ----------------------------------------------------------------------------
+
+create or replace function scan_bag_for_sort_v1(
+  p_client_event_id uuid,
+  p_order_id uuid,
+  p_qr_code_value text,
+  p_client_captured_at timestamptz,
+  p_gps_lat double precision default null,
+  p_gps_lng double precision default null,
+  p_device_id text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+  v_qr qr_codes;
+  v_hole pigeon_holes;
+  v_existing bag_scans;
+begin
+  -- NOTE: bag_scans has several nullable columns (order_bag_id, qr_code_id,
+  -- pigeon_hole_id, gps_lat/lng, ...), so a composite-row `IS NOT NULL` check
+  -- would be wrong here: for a row type, `IS NOT NULL` only evaluates true
+  -- when EVERY field is non-null, not "a row was found" (PL/pgSQL row-value
+  -- NULL semantics follow the SQL standard's row comparison rules, not
+  -- "was this SELECT INTO populated"). We check the non-nullable primary
+  -- key column instead, which is always non-null exactly when a row exists.
+  select * into v_existing from bag_scans where client_event_id = p_client_event_id;
+  if v_existing.id is not null then
+    select * into v_hole from pigeon_holes where id = v_existing.pigeon_hole_id;
+    return jsonb_build_object('pigeon_hole_number', v_hole.hole_number, 'idempotent_replay', true);
+  end if;
+
+  select * into v_order from orders where id = p_order_id;
+  if v_order is null or v_order.assigned_picker_id is distinct from auth.uid() then
+    raise exception 'order not found or not assigned to caller' using errcode = '42501';
+  end if;
+
+  select * into v_qr from qr_codes where code_value = p_qr_code_value and status = 'active';
+  if v_qr is null or v_qr.code_type <> 'bag' or v_qr.entity_id <> v_order.id then
+    raise exception 'qr code not recognized for this order' using errcode = 'P0002';
+  end if;
+
+  if v_order.pigeon_hole_id is null then
+    -- Overflow: no hole has been reserved for this order yet.
+    insert into bag_scans (
+      client_event_id, order_id, qr_code_id, scan_type, scanned_entity_type,
+      actor_user_id, device_id, gps_lat, gps_lng, client_captured_at, is_valid, rejection_reason
+    ) values (
+      p_client_event_id, p_order_id, v_qr.id, 'sort', 'bag',
+      auth.uid(), p_device_id, p_gps_lat, p_gps_lng, p_client_captured_at, false, 'no_hole_reserved'
+    );
+    return jsonb_build_object('pigeon_hole_number', null, 'overflow', true);
+  end if;
+
+  select * into v_hole from pigeon_holes where id = v_order.pigeon_hole_id;
+
+  insert into bag_scans (
+    client_event_id, order_id, qr_code_id, pigeon_hole_id, scan_type, scanned_entity_type,
+    actor_user_id, device_id, gps_lat, gps_lng, client_captured_at
+  ) values (
+    p_client_event_id, p_order_id, v_qr.id, v_hole.id, 'sort', 'bag',
+    auth.uid(), p_device_id, p_gps_lat, p_gps_lng, p_client_captured_at
+  );
+
+  return jsonb_build_object('pigeon_hole_number', v_hole.hole_number, 'overflow', false);
+end;
+$$;
+
+grant execute on function scan_bag_for_sort_v1(uuid, uuid, text, timestamptz, double precision, double precision, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- scan_pigeon_hole_v1 — confirms physical placement of a bag into its
+-- reserved hole. Rejects (server-side, never trusting client state) if the
+-- scanned hole does not match the order's active reservation.
+-- ----------------------------------------------------------------------------
+
+create or replace function scan_pigeon_hole_v1(
+  p_client_event_id uuid,
+  p_order_id uuid,
+  p_pigeon_hole_qr_value text,
+  p_client_captured_at timestamptz,
+  p_gps_lat double precision default null,
+  p_gps_lng double precision default null,
+  p_device_id text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+  v_qr qr_codes;
+  v_bag order_bags;
+  v_hole pigeon_holes;
+  v_pha pigeon_hole_assignments;
+  v_existing bag_scans;
+begin
+  -- NOTE: bag_scans has several nullable columns (order_bag_id, qr_code_id,
+  -- pigeon_hole_id, gps_lat/lng, ...), so a composite-row `IS NOT NULL` check
+  -- would be wrong here: for a row type, `IS NOT NULL` only evaluates true
+  -- when EVERY field is non-null, not "a row was found" (PL/pgSQL row-value
+  -- NULL semantics follow the SQL standard's row comparison rules, not
+  -- "was this SELECT INTO populated"). We check the non-nullable primary
+  -- key column instead, which is always non-null exactly when a row exists.
+  select * into v_existing from bag_scans where client_event_id = p_client_event_id;
+  if v_existing.id is not null then
+    select * into v_order from orders where id = v_existing.order_id;
+    return jsonb_build_object(
+      'order_bag_id', v_existing.order_bag_id,
+      'sorted', v_order.bag_count_scanned_sort,
+      'expected', v_order.bag_count_expected,
+      'order_status', v_order.status,
+      'idempotent_replay', true
+    );
+  end if;
+
+  select * into v_order from orders where id = p_order_id for update;
+  if v_order is null or v_order.assigned_picker_id is distinct from auth.uid() then
+    raise exception 'order not found or not assigned to caller' using errcode = '42501';
+  end if;
+
+  select * into v_qr from qr_codes where code_value = p_pigeon_hole_qr_value and status = 'active';
+  if v_qr is null or v_qr.code_type <> 'pigeon_hole' then
+    raise exception 'qr code not recognized as a pigeon hole code' using errcode = 'P0002';
+  end if;
+
+  if v_order.pigeon_hole_id is null or v_order.pigeon_hole_id <> v_qr.entity_id then
+    raise exception 'this hole does not match the reservation for this order' using errcode = '40001';
+  end if;
+
+  select * into v_hole from pigeon_holes where id = v_order.pigeon_hole_id for update;
+
+  select * into v_bag
+  from order_bags
+  where order_id = p_order_id and status = 'picked_up'
+  order by bag_sequence
+  limit 1
+  for update skip locked;
+
+  if v_bag is null then
+    raise exception 'no remaining picked-up bags to sort for this order' using errcode = '40001';
+  end if;
+
+  update order_bags set status = 'sorted', sorted_at = now(), updated_at = now() where id = v_bag.id;
+
+  insert into bag_scans (
+    client_event_id, order_id, order_bag_id, qr_code_id, pigeon_hole_id,
+    scan_type, scanned_entity_type, actor_user_id, device_id, gps_lat, gps_lng, client_captured_at
+  ) values (
+    p_client_event_id, p_order_id, v_bag.id, v_qr.id, v_hole.id,
+    'sort', 'pigeon_hole', auth.uid(), p_device_id, p_gps_lat, p_gps_lng, p_client_captured_at
+  );
+
+  select * into v_pha from pigeon_hole_assignments
+  where order_id = p_order_id and status in ('reserved', 'active') for update;
+
+  if v_pha.id is null then
+    raise exception 'no active pigeon hole reservation found for this order — data integrity issue, escalate to ops';
+  end if;
+
+  if v_pha.status = 'reserved' then
+    update pigeon_hole_assignments set status = 'active' where id = v_pha.id;
+    update pigeon_holes set status = 'partially_filled', updated_at = now() where id = v_hole.id;
+  end if;
+
+  update orders
+  set bag_count_scanned_sort = bag_count_scanned_sort + 1,
+      status = case
+        when bag_count_scanned_sort + 1 >= bag_count_expected then 'ready_for_dispatch'::order_status
+        else 'sorting_in_progress'::order_status
+      end,
+      sorted_at = case
+        when bag_count_scanned_sort + 1 >= bag_count_expected then now()
+        else sorted_at
+      end,
+      updated_at = now()
+  where id = p_order_id
+  returning * into v_order;
+
+  if v_order.status = 'ready_for_dispatch' then
+    update pigeon_holes set status = 'filled', updated_at = now() where id = v_hole.id;
+    update pigeon_hole_assignments set status = 'active', filled_at = now()
+      where id = v_pha.id;
+    insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id)
+    values ('order', p_order_id, 'sorting_in_progress', 'ready_for_dispatch', 'system', auth.uid());
+  end if;
+
+  return jsonb_build_object(
+    'order_bag_id', v_bag.id,
+    'bag_sequence', v_bag.bag_sequence,
+    'sorted', v_order.bag_count_scanned_sort,
+    'expected', v_order.bag_count_expected,
+    'order_status', v_order.status,
+    'idempotent_replay', false
+  );
+end;
+$$;
+
+grant execute on function scan_pigeon_hole_v1(uuid, uuid, text, timestamptz, double precision, double precision, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- record_warehouse_arrival_v1 — proves physical arrival (gate QR) and
+-- reserves pigeon holes for every currently-PICKED order the picker is
+-- carrying, using FOR UPDATE SKIP LOCKED so concurrent pickers arriving at
+-- the same moment never race for the same hole (docs Section 13.2).
+-- ----------------------------------------------------------------------------
+
+create type warehouse_arrival_result as (
+  order_id uuid,
+  pigeon_hole_number text,
+  reserved boolean
+);
+
+create or replace function record_warehouse_arrival_v1(
+  p_client_event_id uuid,
+  p_gate_qr_value text,
+  p_order_ids uuid[],
+  p_client_captured_at timestamptz,
+  p_gps_lat double precision default null,
+  p_gps_lng double precision default null,
+  p_device_id text default null
+)
+returns setof warehouse_arrival_result
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_gate_qr qr_codes;
+  v_warehouse_id uuid;
+  v_sort_wall_id uuid;
+  v_order_id uuid;
+  v_order orders;
+  v_hole pigeon_holes;
+  v_existing bag_scans;
+begin
+  -- NOTE: bag_scans has several nullable columns (order_bag_id, qr_code_id,
+  -- pigeon_hole_id, gps_lat/lng, ...), so a composite-row `IS NOT NULL` check
+  -- would be wrong here: for a row type, `IS NOT NULL` only evaluates true
+  -- when EVERY field is non-null, not "a row was found" (PL/pgSQL row-value
+  -- NULL semantics follow the SQL standard's row comparison rules, not
+  -- "was this SELECT INTO populated"). We check the non-nullable primary
+  -- key column instead, which is always non-null exactly when a row exists.
+  select * into v_existing from bag_scans where client_event_id = p_client_event_id;
+  if v_existing.id is not null then
+    -- Idempotent replay: return current reservation state for the same order set.
+    return query
+      select o.id, ph.hole_number, (o.pigeon_hole_id is not null)
+      from orders o
+      left join pigeon_holes ph on ph.id = o.pigeon_hole_id
+      where o.id = any(p_order_ids);
+    return;
+  end if;
+
+  select * into v_gate_qr from qr_codes where code_value = p_gate_qr_value and status = 'active';
+  if v_gate_qr is null or v_gate_qr.code_type <> 'warehouse_gate' then
+    raise exception 'gate qr code not recognized' using errcode = 'P0002';
+  end if;
+  v_warehouse_id := v_gate_qr.entity_id;
+
+  select id into v_sort_wall_id from sort_walls where warehouse_id = v_warehouse_id and status = 'active' limit 1;
+  if v_sort_wall_id is null then
+    raise exception 'no active sort wall configured for this warehouse';
+  end if;
+
+  insert into bag_scans (
+    client_event_id, order_id, qr_code_id, scan_type, scanned_entity_type,
+    actor_user_id, device_id, gps_lat, gps_lng, client_captured_at
+  ) values (
+    p_client_event_id, p_order_ids[1], v_gate_qr.id, 'warehouse_arrival', 'warehouse_gate',
+    auth.uid(), p_device_id, p_gps_lat, p_gps_lng, p_client_captured_at
+  );
+
+  foreach v_order_id in array p_order_ids loop
+    select * into v_order from orders where id = v_order_id for update;
+    if v_order is null or v_order.assigned_picker_id is distinct from auth.uid() or v_order.status <> 'picked' then
+      continue; -- skip orders that are not this picker's or not yet fully picked
+    end if;
+
+    update orders
+    set status = 'arrived_at_warehouse',
+        warehouse_id = v_warehouse_id,
+        sort_wall_id = v_sort_wall_id,
+        warehouse_arrived_at = now(),
+        updated_at = now()
+    where id = v_order_id;
+
+    -- Claim a free hole, skipping any locked by a concurrently-arriving picker.
+    select * into v_hole
+    from pigeon_holes
+    where sort_wall_id = v_sort_wall_id and status = 'free'
+    order by hole_number
+    limit 1
+    for update skip locked;
+
+    if v_hole is null then
+      insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id, reason)
+      values ('order', v_order_id, 'arrived_at_warehouse', 'arrived_at_warehouse', 'system', auth.uid(), 'sort_wall_full_overflow');
+      return query select v_order_id, null::text, false;
+      continue;
+    end if;
+
+    update pigeon_holes set status = 'reserved', updated_at = now() where id = v_hole.id;
+    insert into pigeon_hole_assignments (order_id, pigeon_hole_id, status)
+    values (v_order_id, v_hole.id, 'reserved');
+
+    update orders
+    set pigeon_hole_id = v_hole.id,
+        status = 'sorting_in_progress',
+        updated_at = now()
+    where id = v_order_id;
+
+    insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id)
+    values ('order', v_order_id, 'arrived_at_warehouse', 'sorting_in_progress', 'system', auth.uid());
+
+    return query select v_order_id, v_hole.hole_number, true;
+  end loop;
+end;
+$$;
+
+grant execute on function record_warehouse_arrival_v1(uuid, text, uuid[], timestamptz, double precision, double precision, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- report_order_issue_v1 — picker-reported exception (missing bag, wrong
+-- count, etc.) so a problem is never silently stuck (docs Section 3.4/12.6).
+-- ----------------------------------------------------------------------------
+
+create or replace function report_order_issue_v1(
+  p_order_id uuid,
+  p_issue_type text,
+  p_notes text default null
+)
+returns orders
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+  v_from_status text;
+  v_to_status order_status;
+begin
+  select * into v_order from orders where id = p_order_id for update;
+  if v_order is null or v_order.assigned_picker_id is distinct from auth.uid() then
+    raise exception 'order not found or not assigned to caller' using errcode = '42501';
+  end if;
+
+  v_from_status := v_order.status;
+  v_to_status := case
+    when v_order.status in ('sorting_in_progress') then 'exception_partial_sort'::order_status
+    else 'exception_missing_bag'::order_status
+  end;
+
+  update orders set status = v_to_status, updated_at = now() where id = p_order_id returning * into v_order;
+
+  insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id, reason)
+  values ('order', p_order_id, v_from_status, v_to_status, 'user', auth.uid(), coalesce(p_issue_type, '') || ': ' || coalesce(p_notes, ''));
+
+  insert into notifications (recipient_user_id, channel, template, payload)
+  select p.id, 'in_app', 'order_exception_raised',
+         jsonb_build_object('order_id', p_order_id, 'issue_type', p_issue_type, 'notes', p_notes)
+  from profiles p
+  where p.role in ('ops_manager', 'admin')
+    and (p.warehouse_id = v_order.warehouse_id or v_order.warehouse_id is null);
+
+  return v_order;
+end;
+$$;
+
+grant execute on function report_order_issue_v1(uuid, text, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- mark_order_dispatched_v1 — manual delivery-partner handoff (free MVP has
+-- no automated partner API; Ops/Staff records the physical collection).
+-- ----------------------------------------------------------------------------
+
+create or replace function mark_order_dispatched_v1(
+  p_order_id uuid,
+  p_delivery_partner_id uuid default null,
+  p_reason text default null
+)
+returns orders
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_order orders;
+  v_caller_role user_role;
+  v_caller_warehouse uuid;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  v_caller_warehouse := (select warehouse_id from profiles where id = auth.uid());
+  if v_caller_role not in ('warehouse_staff', 'ops_manager', 'admin') then
+    raise exception 'not permitted' using errcode = '42501';
+  end if;
+
+  select * into v_order from orders where id = p_order_id for update;
+  if v_order is null then
+    raise exception 'order not found';
+  end if;
+  if v_caller_role <> 'admin' and v_order.warehouse_id is distinct from v_caller_warehouse then
+    raise exception 'order does not belong to caller warehouse' using errcode = '42501';
+  end if;
+  if v_order.status <> 'ready_for_dispatch' then
+    raise exception 'order is not ready for dispatch (status=%)', v_order.status using errcode = '40001';
+  end if;
+
+  update orders set status = 'dispatched', dispatched_at = now(), updated_at = now()
+  where id = p_order_id returning * into v_order;
+
+  if v_order.pigeon_hole_id is not null then
+    update pigeon_holes set status = 'free', updated_at = now() where id = v_order.pigeon_hole_id;
+    update pigeon_hole_assignments set status = 'freed', freed_at = now()
+      where order_id = p_order_id and status = 'active';
+  end if;
+
+  insert into delivery_assignments (order_id, delivery_partner_id, status, assigned_by_user_id, is_force_assigned, notes, collected_at)
+  values (p_order_id, p_delivery_partner_id, 'collected', auth.uid(), p_delivery_partner_id is not null, p_reason, now());
+
+  insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id, reason)
+  values ('order', p_order_id, 'ready_for_dispatch', 'dispatched', 'user', auth.uid(), p_reason);
+
+  insert into audit_logs (actor_user_id, action, target_type, target_id, metadata)
+  values (auth.uid(), 'order.mark_dispatched', 'order', p_order_id, jsonb_build_object('reason', p_reason));
+
+  return v_order;
+end;
+$$;
+
+grant execute on function mark_order_dispatched_v1(uuid, uuid, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- mark_hole_out_of_service_v1 / restore_pigeon_hole_v1 — warehouse hardware
+-- exceptions (docs Section 6.3/13.6).
+-- ----------------------------------------------------------------------------
+
+create or replace function mark_hole_out_of_service_v1(p_pigeon_hole_id uuid, p_reason text)
+returns pigeon_holes
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_hole pigeon_holes;
+  v_caller_role user_role;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  if v_caller_role not in ('warehouse_staff', 'ops_manager', 'admin') then
+    raise exception 'not permitted' using errcode = '42501';
+  end if;
+  if p_reason is null or length(trim(p_reason)) = 0 then
+    raise exception 'reason is required' using errcode = '40001';
+  end if;
+
+  update pigeon_holes set status = 'out_of_service', updated_at = now()
+  where id = p_pigeon_hole_id returning * into v_hole;
+
+  insert into audit_logs (actor_user_id, action, target_type, target_id, metadata)
+  values (auth.uid(), 'pigeon_hole.marked_out_of_service', 'pigeon_hole', p_pigeon_hole_id, jsonb_build_object('reason', p_reason));
+
+  return v_hole;
+end;
+$$;
+
+grant execute on function mark_hole_out_of_service_v1(uuid, text) to authenticated;
+
+create or replace function restore_pigeon_hole_v1(p_pigeon_hole_id uuid)
+returns pigeon_holes
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_hole pigeon_holes;
+  v_caller_role user_role;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  if v_caller_role not in ('warehouse_staff', 'ops_manager', 'admin') then
+    raise exception 'not permitted' using errcode = '42501';
+  end if;
+
+  update pigeon_holes set status = 'free', updated_at = now()
+  where id = p_pigeon_hole_id and status = 'out_of_service'
+  returning * into v_hole;
+
+  if v_hole is null then
+    raise exception 'hole not found or not out of service';
+  end if;
+
+  insert into audit_logs (actor_user_id, action, target_type, target_id)
+  values (auth.uid(), 'pigeon_hole.restored', 'pigeon_hole', p_pigeon_hole_id);
+
+  return v_hole;
+end;
+$$;
+
+grant execute on function restore_pigeon_hole_v1(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- notifications_mark_read_v1
+-- ----------------------------------------------------------------------------
+
+create or replace function notifications_mark_read_v1(p_notification_id uuid)
+returns notifications
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_row notifications;
+begin
+  update notifications set status = 'read', read_at = now()
+  where id = p_notification_id and recipient_user_id = auth.uid()
+  returning * into v_row;
+
+  if v_row is null then
+    raise exception 'notification not found';
+  end if;
+  return v_row;
+end;
+$$;
+
+grant execute on function notifications_mark_read_v1(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Admin/test-data helpers — stand in for a real Store API integration until
+-- one is built. Restricted to admin/ops so pickers/staff cannot fabricate
+-- orders.
+-- ----------------------------------------------------------------------------
+
+create or replace function admin_create_order_v1(
+  p_store_external_ref text,
+  p_bag_count integer,
+  p_store_floor text default null,
+  p_store_zone text default null,
+  p_store_address text default null,
+  p_external_order_ref text default null
+)
+returns orders
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller_role user_role;
+  v_store stores;
+  v_order orders;
+  v_qr qr_codes;
+  v_ref text;
+  i integer;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  if v_caller_role not in ('ops_manager', 'admin') then
+    raise exception 'not permitted' using errcode = '42501';
+  end if;
+  if p_bag_count is null or p_bag_count <= 0 or p_bag_count > 32767 then
+    raise exception 'bag count must be a positive number no greater than 32767' using errcode = '40001';
+  end if;
+
+  select * into v_store from stores where external_ref = p_store_external_ref;
+  if v_store is null then
+    insert into stores (external_ref, name, default_zone)
+    values (p_store_external_ref, p_store_external_ref, p_store_zone)
+    returning * into v_store;
+  end if;
+
+  v_ref := coalesce(p_external_order_ref, 'SO-' || to_char(now(), 'YYMMDDHH24MISS') || '-' || substr(gen_random_uuid()::text, 1, 4));
+
+  insert into orders (store_id, external_order_ref, bag_count_expected, store_floor, store_zone, store_address, status)
+  values (v_store.id, v_ref, p_bag_count, p_store_floor, coalesce(p_store_zone, v_store.default_zone), p_store_address, 'available')
+  returning * into v_order;
+
+  insert into qr_codes (code_type, code_value, code_version, entity_id, status)
+  values ('bag', v_ref || '-' || substr(gen_random_uuid()::text, 1, 6), 1, v_order.id, 'active')
+  returning * into v_qr;
+
+  update orders set shared_bag_qr_code_id = v_qr.id where id = v_order.id returning * into v_order;
+
+  for i in 1..p_bag_count loop
+    insert into order_bags (order_id, bag_sequence, status)
+    values (v_order.id, i, 'expected');
+  end loop;
+
+  insert into status_history (entity_type, entity_id, from_status, to_status, actor_type, actor_user_id)
+  values ('order', v_order.id, null, 'available', 'user', auth.uid());
+
+  return v_order;
+end;
+$$;
+
+grant execute on function admin_create_order_v1(text, integer, text, text, text, text) to authenticated;
+
+create or replace function admin_create_pigeon_holes_v1(
+  p_sort_wall_id uuid,
+  p_count integer,
+  p_prefix text default 'P'
+)
+returns setof pigeon_holes
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller_role user_role;
+  v_hole pigeon_holes;
+  v_qr qr_codes;
+  i integer;
+  v_number text;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  if v_caller_role <> 'admin' then
+    raise exception 'not permitted' using errcode = '42501';
+  end if;
+
+  for i in 1..p_count loop
+    v_number := p_prefix || '-' || lpad(i::text, 3, '0');
+    insert into pigeon_holes (sort_wall_id, hole_number, status)
+    values (p_sort_wall_id, v_number, 'free')
+    returning * into v_hole;
+
+    insert into qr_codes (code_type, code_value, code_version, entity_id, status)
+    values ('pigeon_hole', 'HOLE-' || v_number || '-' || substr(gen_random_uuid()::text, 1, 6), 1, v_hole.id, 'active')
+    returning * into v_qr;
+
+    update pigeon_holes set qr_code_id = v_qr.id where id = v_hole.id returning * into v_hole;
+    return next v_hole;
+  end loop;
+  return;
+end;
+$$;
+
+grant execute on function admin_create_pigeon_holes_v1(uuid, integer, text) to authenticated;
+
+create or replace function admin_create_warehouse_gate_v1(p_warehouse_id uuid)
+returns qr_codes
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller_role user_role;
+  v_qr qr_codes;
+begin
+  v_caller_role := (select role from profiles where id = auth.uid());
+  if v_caller_role <> 'admin' then
+    raise exception 'not permitted' using errcode = '42501';
+  end if;
+
+  insert into qr_codes (code_type, code_value, code_version, entity_id, status)
+  values ('warehouse_gate', 'GATE-' || substr(gen_random_uuid()::text, 1, 8), 1, p_warehouse_id, 'active')
+  returning * into v_qr;
+
+  return v_qr;
+end;
+$$;
+
+grant execute on function admin_create_warehouse_gate_v1(uuid) to authenticated;
+
+-- ========================= END 0003_functions.sql =========================
+
+
+-- ======================== BEGIN 0004_security_hardening.sql ========================
+
+-- ============================================================================
+-- 0004_security_hardening.sql
+-- Supabase-specific privilege and RLS hardening.
+--
+-- Why this is separate:
+--   0002_rls.sql intentionally introduced readable helper functions, but an
+--   authenticated profile lookup from inside a profiles policy can recurse
+--   back into that same policy. These SECURITY DEFINER helpers safely bypass
+--   that recursion while accepting no caller-controlled identity input:
+--   every lookup is anchored to auth.uid().
+--
+-- This migration also removes direct UPDATE access from profiles and
+-- notifications. The browser must use audited/versioned RPC functions
+-- instead, so a user cannot change their own role or rewrite a notification.
+-- ============================================================================
+
+create or replace function auth_role()
+returns user_role
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select role from public.profiles where id = auth.uid();
+$$;
+
+create or replace function auth_warehouse_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select warehouse_id from public.profiles where id = auth.uid();
+$$;
+
+create or replace function auth_is_ops_or_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select coalesce(public.auth_role() in ('ops_manager', 'admin'), false);
+$$;
+
+create or replace function auth_is_warehouse_role()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select coalesce(public.auth_role() in ('warehouse_staff', 'ops_manager', 'admin'), false);
+$$;
+
+create or replace function auth_is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select coalesce(public.auth_role() = 'admin', false);
+$$;
+
+-- Direct profile updates are unsafe: a row-level WITH CHECK on id alone
+-- cannot stop a user from changing their own role/warehouse columns.
+drop policy if exists profiles_update_own_presence on profiles;
+
+-- Direct notification UPDATE would allow rewriting payload/recipient fields.
+-- `notifications_mark_read_v1` is the only supported mutation.
+drop policy if exists notifications_update_own_read on notifications;
+
+-- Supabase functions are executable by PUBLIC by default unless revoked.
+-- Revoke everything first, then grant only the exact browser-facing surface.
+revoke execute on all functions in schema public from public;
+revoke execute on all functions in schema public from anon;
+
+grant usage on schema public to authenticated;
+grant select on all tables in schema public to authenticated;
+
+grant execute on function auth_role() to authenticated;
+grant execute on function auth_warehouse_id() to authenticated;
+grant execute on function auth_is_ops_or_admin() to authenticated;
+grant execute on function auth_is_warehouse_role() to authenticated;
+grant execute on function auth_is_admin() to authenticated;
+
+grant execute on function set_picker_status_v1(boolean, double precision, double precision) to authenticated;
+grant execute on function accept_order_v1(uuid) to authenticated;
+grant execute on function decline_order_v1(uuid) to authenticated;
+grant execute on function scan_bag_pickup_v1(
+  uuid, uuid, text, timestamptz, double precision, double precision, text
+) to authenticated;
+grant execute on function scan_bag_for_sort_v1(
+  uuid, uuid, text, timestamptz, double precision, double precision, text
+) to authenticated;
+grant execute on function scan_pigeon_hole_v1(
+  uuid, uuid, text, timestamptz, double precision, double precision, text
+) to authenticated;
+grant execute on function record_warehouse_arrival_v1(
+  uuid, text, uuid[], timestamptz, double precision, double precision, text
+) to authenticated;
+grant execute on function report_order_issue_v1(uuid, text, text) to authenticated;
+grant execute on function mark_order_dispatched_v1(uuid, uuid, text) to authenticated;
+grant execute on function mark_hole_out_of_service_v1(uuid, text) to authenticated;
+grant execute on function restore_pigeon_hole_v1(uuid) to authenticated;
+grant execute on function notifications_mark_read_v1(uuid) to authenticated;
+grant execute on function admin_create_order_v1(
+  text, integer, text, text, text, text
+) to authenticated;
+grant execute on function admin_create_pigeon_holes_v1(uuid, integer, text) to authenticated;
+grant execute on function admin_create_warehouse_gate_v1(uuid) to authenticated;
+grant usage on type warehouse_arrival_result to authenticated;
+
+-- Explicitly keep anonymous users out. RLS already returns no rows, but
+-- revoking table privileges gives defense in depth and clearer failures.
+revoke all on all tables in schema public from anon;
+
+-- Enable only the tables the PWA subscribes to through Supabase Realtime.
+-- The local bare-Postgres test environment has no `supabase_realtime`
+-- publication, so guard this block; the publication exists in Supabase.
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    if not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'orders'
+    ) then
+      alter publication supabase_realtime add table public.orders;
+    end if;
+
+    if not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'pigeon_holes'
+    ) then
+      alter publication supabase_realtime add table public.pigeon_holes;
+    end if;
+
+    if not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'notifications'
+    ) then
+      alter publication supabase_realtime add table public.notifications;
+    end if;
+  end if;
+end $$;
+
+-- ========================= END 0004_security_hardening.sql =========================
+

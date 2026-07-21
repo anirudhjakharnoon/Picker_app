@@ -25,10 +25,12 @@ can apply them however is convenient:
 **Option A — Supabase SQL editor (fastest, no CLI needed):**
 
 1. Open your project's SQL editor: `https://supabase.com/dashboard/project/aetrwtubfifljkxwocpy/sql/new`
-2. Paste and run, **in this exact order**:
-   1. `supabase/migrations/0001_schema.sql`
-   2. `supabase/migrations/0002_rls.sql`
-   3. `supabase/migrations/0003_functions.sql`
+2. Copy the complete generated `supabase/setup.sql` file.
+3. Paste it into the SQL editor and click **Run**.
+
+`setup.sql` combines the four numbered migrations in the correct order:
+`0001_schema.sql`, `0002_rls.sql`, `0003_functions.sql`, and
+`0004_security_hardening.sql`.
 
 **Option B — Supabase CLI (if you link the project locally):**
 
@@ -42,8 +44,12 @@ Both options are idempotent-safe to re-run from a clean project, but are
 these tables (they use `create table`, not `create table if not exists`,
 by design — Section 5 of the design doc explains why silent schema drift is
 worse than a loud failure here). If you need to iterate on the schema after
-first applying it, write a new `0004_*.sql` migration rather than editing
-`0001`–`0003` in place.
+first applying it, write a new numbered migration rather than editing
+`0001`–`0004` in place, then regenerate the one-file setup with:
+
+```bash
+node scripts/build-supabase-setup.mjs
+```
 
 ## 2. Get your anon/publishable key
 
