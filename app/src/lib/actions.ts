@@ -5,6 +5,7 @@ export type ActionType =
   | 'scan_bag_pickup'
   | 'scan_bag_for_sort'
   | 'scan_pigeon_hole'
+  | 'scan_bag_into_pigeon_hole'
   | 'record_warehouse_arrival';
 
 export interface ActionResult {
@@ -47,6 +48,8 @@ function rpcNameFor(type: ActionType): string {
       return 'scan_bag_for_sort_v1';
     case 'scan_pigeon_hole':
       return 'scan_pigeon_hole_v1';
+    case 'scan_bag_into_pigeon_hole':
+      return 'scan_bag_into_pigeon_hole_v1';
     case 'record_warehouse_arrival':
       return 'record_warehouse_arrival_v1';
   }
