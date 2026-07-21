@@ -507,6 +507,85 @@ section {
   color: #ffffff;
 }
 
+.admin-hole-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.65rem;
+}
+
+.admin-hole-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.7rem;
+  background: var(--color-surface);
+}
+
+.admin-hole-row span {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-hole-row strong {
+  color: var(--color-heading);
+}
+
+.admin-hole-row small {
+  color: var(--color-text-muted);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.qr-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(20 20 22 / 48%);
+}
+
+.qr-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  width: min(100%, 360px);
+  padding: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  box-shadow: 0 16px 44px rgb(20 20 22 / 30%);
+}
+
+.qr-dialog h2 {
+  margin: 0;
+  color: var(--color-heading);
+}
+
+.qr-dialog .qr-code-preview {
+  width: min(70vw, 250px);
+  height: auto;
+}
+
+.qr-dialog code {
+  max-width: 100%;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.qr-dialog .close {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.65rem;
+}
+
 .generated-code strong,
 .generated-code code {
   overflow-wrap: anywhere;
@@ -1327,6 +1406,78 @@ section {
 .order-mini span {
   color: var(--color-text-muted);
   font-weight: 600;
+}
+
+/* Sequential pigeon-hole drop-off cards. Later allocation steps deliberately
+   expose no hole number until the prior hole's allocated bags are complete. */
+.sorting-order-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-surface);
+}
+
+.sorting-order-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.sorting-total {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.sorting-current-hole {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 1rem;
+  border: 1px solid var(--color-brand);
+  border-radius: 0.75rem;
+  background: var(--color-brand-tint);
+  color: var(--color-brand-deep);
+  text-align: left;
+}
+
+.sorting-current-hole span {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.sorting-current-hole strong {
+  color: var(--color-heading);
+  font-size: 1.45rem;
+  font-weight: 800;
+}
+
+.sorting-current-hole small {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.sorting-locked-holes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.sorting-locked-holes span {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-subtle);
+  color: var(--color-text-disabled);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 /* --- Handoff bar --- */

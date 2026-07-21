@@ -3,6 +3,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useOrders } from '../lib/useOrders';
 import { useStoreNames } from '../lib/useStores';
 import { submitAction } from '../lib/actions';
+import { supabase } from '../lib/supabaseClient';
 import { QrScannerView } from '../components/QrScannerView';
 import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
@@ -16,8 +17,7 @@ type Screen =
   | { name: 'dropoff' }
   | { name: 'scan-gate' }
   | { name: 'sorting' }
-  | { name: 'scan-bag-for-sort'; orderId: string }
-  | { name: 'scan-hole'; orderId: string; holeNumber: string };
+  | { name: 'drop-into-hole'; orderId: string; holeId: string; holeNumber: string };
 
 type QueueTab = 'pending' | 'in_progress' | 'picked_up';
 
@@ -287,45 +287,27 @@ export function PickerPage() {
             <div className="empty-state">Nothing left to sort. Great work!</div>
           )}
           {inSorting.map((o) => (
-            <button
+            <SortingOrderStep
               key={o.id}
-              type="button"
-              className="order-card tappable"
-              onClick={() => setScreen({ name: 'scan-bag-for-sort', orderId: o.id })}
-            >
-              <div className="order-card-head">
-                <span className="order-number">{o.external_order_ref}</span>
-              </div>
-              <div className="order-line muted">
-                Sorted {o.bag_count_scanned_sort}/{o.bag_count_expected} bags
-              </div>
-            </button>
+              order={o}
+              onOpenHole={(holeId, holeNumber) =>
+                setScreen({ name: 'drop-into-hole', orderId: o.id, holeId, holeNumber })
+              }
+            />
           ))}
         </div>
       </div>
     );
   }
 
-  if (screen.name === 'scan-bag-for-sort') {
+  if (screen.name === 'drop-into-hole') {
     return (
-      <ScanBagForSortScreen
+      <DropIntoHoleFlow
         orderId={screen.orderId}
-        onHoleFound={(holeNumber) =>
-          setScreen({ name: 'scan-hole', orderId: screen.orderId, holeNumber })
-        }
-        onClose={() => setScreen({ name: 'sorting' })}
-        notify={notify}
-      />
-    );
-  }
-
-  if (screen.name === 'scan-hole') {
-    return (
-      <ScanHoleScreen
-        orderId={screen.orderId}
+        holeId={screen.holeId}
         holeNumber={screen.holeNumber}
-        onDone={() => {
-          void refetch();
+        onDone={async () => {
+          await refetch();
           setScreen({ name: 'sorting' });
         }}
         notify={notify}
@@ -723,105 +705,164 @@ function GateScanScreen({
   );
 }
 
-function ScanBagForSortScreen({
-  orderId,
-  onHoleFound,
-  onClose,
-  notify,
+interface SortingStep {
+  hole_id: string;
+  hole_number: string | null;
+  bags_reserved: number;
+  bags_sorted: number;
+  is_unlocked: boolean;
+}
+
+function SortingOrderStep({
+  order,
+  onOpenHole,
 }: {
-  orderId: string;
-  onHoleFound: (holeNumber: string) => void;
-  onClose: () => void;
-  notify: (msg: string) => void;
+  order: Order;
+  onOpenHole: (holeId: string, holeNumber: string) => void;
 }) {
-  const [paused, setPaused] = useState(false);
+  const [steps, setSteps] = useState<SortingStep[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleDecode = async (value: string) => {
-    if (paused) return;
-    setPaused(true);
-    const result = await submitAction('scan_bag_for_sort', (clientEventId) => ({
-      p_client_event_id: clientEventId,
-      p_order_id: orderId,
-      p_qr_code_value: value,
-      p_client_captured_at: new Date().toISOString(),
-    }));
-    if (result.ok) {
-      const data = result.data as { pigeon_hole_number: string | null; overflow: boolean };
-      if (data.overflow || !data.pigeon_hole_number) {
-        notify('No pigeon hole reserved yet — hold this bag, we will notify you.');
-        setPaused(false);
-      } else {
-        onHoleFound(data.pigeon_hole_number);
+  useEffect(() => {
+    let cancelled = false;
+    void supabase.rpc('get_order_sorting_steps_v1', { p_order_id: order.id }).then(({ data, error: rpcError }) => {
+      if (cancelled) return;
+      if (rpcError) {
+        setError(rpcError.message);
+        return;
       }
-    } else {
-      notify(`Scan rejected: ${result.error}`);
-      setPaused(false);
-    }
-  };
+      setSteps((data as SortingStep[] | null) ?? []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [order.id, order.bag_count_scanned_sort]);
 
+  const current = steps.find((step) => step.is_unlocked && step.bags_sorted < step.bags_reserved);
   return (
-    <FullscreenSheet onClose={onClose}>
-      <div className="scan-heading fade-in">
-        <h2 className="scan-title">Scan bag</h2>
-        <p className="scan-sub">Scan a bag to see which pigeon hole it goes to</p>
+    <article className="sorting-order-card">
+      <div className="sorting-order-header">
+        <span className="order-number">{order.external_order_ref}</span>
+        <span className="sorting-total">Dropped {order.bag_count_scanned_sort}/{order.bag_count_expected} bags</span>
       </div>
-      <QrScannerView onDecode={handleDecode} paused={paused} />
-    </FullscreenSheet>
+      {error && <p className="error-text">{error}</p>}
+      {current && current.hole_number && (
+        <button
+          type="button"
+          className="sorting-current-hole"
+          onClick={() => onOpenHole(current.hole_id, current.hole_number!)}
+        >
+          <span>Head to pigeon hole:</span>
+          <strong>{current.hole_number}</strong>
+          <small>Dropped {current.bags_sorted}/{current.bags_reserved} bags here</small>
+        </button>
+      )}
+      <div className="sorting-locked-holes">
+        {steps.filter((step) => !step.is_unlocked).map((step, index) => (
+          <span key={step.hole_id}>🔒 Next pigeon hole locked{index > 0 ? ` +${index}` : ''}</span>
+        ))}
+      </div>
+    </article>
   );
 }
 
-function ScanHoleScreen({
+function DropIntoHoleFlow({
   orderId,
+  holeId,
   holeNumber,
   onDone,
   notify,
 }: {
   orderId: string;
+  holeId: string;
   holeNumber: string;
-  onDone: () => void;
+  onDone: () => Promise<void>;
   notify: (msg: string) => void;
 }) {
+  const [phase, setPhase] = useState<'verify-hole' | 'scan-bags' | 'complete'>('verify-hole');
   const [paused, setPaused] = useState(false);
-  const [success, setSuccess] = useState(false);
+  const [holeQrValue, setHoleQrValue] = useState<string | null>(null);
+  const [dropped, setDropped] = useState(0);
+  const [expected, setExpected] = useState(0);
 
-  const handleDecode = async (value: string) => {
+  const verifyHole = async (value: string) => {
     if (paused) return;
     setPaused(true);
-    const result = await submitAction('scan_pigeon_hole', (clientEventId) => ({
-      p_client_event_id: clientEventId,
+    const { data, error } = await supabase.rpc('verify_pigeon_hole_v1', {
       p_order_id: orderId,
       p_pigeon_hole_qr_value: value,
+    });
+    if (error) {
+      notify(error.message);
+      setPaused(false);
+      return;
+    }
+    const step = data as { hole_id: string; hole_number: string; dropped: number; expected: number };
+    if (step.hole_id !== holeId) {
+      notify('That pigeon hole is not unlocked yet.');
+      setPaused(false);
+      return;
+    }
+    setHoleQrValue(value);
+    setDropped(step.dropped);
+    setExpected(step.expected);
+    setPhase('scan-bags');
+    setPaused(false);
+  };
+
+  const scanBag = async (value: string) => {
+    if (paused || !holeQrValue) return;
+    setPaused(true);
+    const result = await submitAction('scan_bag_into_pigeon_hole', (clientEventId) => ({
+      p_client_event_id: clientEventId,
+      p_order_id: orderId,
+      p_bag_qr_value: value,
+      p_pigeon_hole_qr_value: holeQrValue,
       p_client_captured_at: new Date().toISOString(),
+      p_device_id: navigator.userAgent.slice(0, 64),
     }));
-    if (result.ok) {
-      setSuccess(true);
-      window.setTimeout(onDone, 1200);
+    if (!result.ok) {
+      notify(result.error === 'Wrong bag, bag does not belong to the hole'
+        ? 'Wrong bag, bag does not belong to the hole'
+        : `Scan rejected: ${result.error}`);
+      setPaused(false);
+      return;
+    }
+    const placement = result.data as { dropped: number; expected: number; hole_complete: boolean };
+    setDropped(placement.dropped);
+    setExpected(placement.expected);
+    if (placement.hole_complete) {
+      setPhase('complete');
+      window.setTimeout(() => void onDone(), 1100);
     } else {
-      notify(`Scan rejected: ${result.error}`);
       setPaused(false);
     }
   };
 
-  if (success) {
+  if (phase === 'complete') {
     return (
-      <FullscreenSheet onClose={onDone}>
+      <FullscreenSheet onClose={() => void onDone()}>
         <div className="sheet-body center fade-in">
-          <div className="success-checkmark">
-            <CheckIcon />
-          </div>
-          <h2>Bag placed in {holeNumber}</h2>
+          <div className="success-checkmark"><CheckIcon /></div>
+          <h2>Pigeon hole {holeNumber} complete</h2>
+          <p className="sheet-sub">The next pigeon hole is now unlocked.</p>
         </div>
       </FullscreenSheet>
     );
   }
 
   return (
-    <FullscreenSheet onClose={onDone}>
+    <FullscreenSheet onClose={() => void onDone()}>
       <div className="scan-heading fade-in">
-        <h2 className="scan-title">Scan hole {holeNumber}</h2>
-        <p className="scan-sub">Scan the QR code on pigeon hole {holeNumber}</p>
+        <p className="scan-order">Head to pigeon hole: {holeNumber}</p>
+        <h2 className="scan-title">{phase === 'verify-hole' ? `Scan hole ${holeNumber}` : 'Scan bags into this hole'}</h2>
+        <p className="scan-sub">
+          {phase === 'verify-hole'
+            ? 'First scan the pigeon hole QR to confirm you are at the right location.'
+            : `Dropped ${dropped}/${expected} bags. Scan only bags for this hole.`}
+        </p>
       </div>
-      <QrScannerView onDecode={handleDecode} paused={paused} />
+      <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} paused={paused} />
     </FullscreenSheet>
   );
 }
