@@ -1,1 +1,303 @@
-# Picker_app
+# Picker & Sort Wall PWA
+
+One website/PWA for Picker, Sort Wall, and Admin, backed by Supabase Free.
+
+> If this README only says `# Picker_app`, you are viewing the old `main`
+> branch. The application is currently in
+> [Pull Request #2](https://github.com/anirudhjakharnoon/Picker_app/pull/2).
+> Merge that pull request first, or switch to branch
+> `cursor/picker-sortwall-pwa-339b`.
+
+## Before you start
+
+You need free accounts for:
+
+1. [Supabase](https://supabase.com/) — you already created project
+   `aetrwtubfifljkxwocpy`.
+2. [Cloudflare](https://dash.cloudflare.com/sign-up) — only needed when you
+   want a public website. Local testing does not need it.
+3. GitHub — already used by this repository.
+
+There is no SMS OTP, paid push service, paid map, or paid backend server.
+Login uses Supabase email/password, which is included in its free tier.
+
+---
+
+# Part 1 — Put the database into Supabase
+
+## Step 1: Open the one-file database setup
+
+After merging PR #2, open:
+
+[`supabase/setup.sql`](supabase/setup.sql)
+
+Click **Raw**, then select all and copy the complete file.
+
+## Step 2: Run it in Supabase
+
+1. Open the project's
+   [Supabase SQL Editor](https://supabase.com/dashboard/project/aetrwtubfifljkxwocpy/sql/new).
+2. Click **New query** if an empty editor is not already open.
+3. Paste everything copied from `supabase/setup.sql`.
+4. Click **Run**.
+5. Wait until Supabase shows **Success. No rows returned** (other harmless
+   success messages are also possible).
+
+Do not paste the file a second time. It creates the database tables and is
+intended for a new/empty project.
+
+## Step 3: Create the demo warehouse and pigeon holes
+
+1. Open [`supabase/bootstrap_demo.sql`](supabase/bootstrap_demo.sql).
+2. Click **Raw**, copy the whole file.
+3. Return to Supabase SQL Editor and create a **New query**.
+4. Paste the file and click **Run**.
+5. At the bottom, Supabase displays:
+   - the warehouse ID;
+   - the warehouse gate code; and
+   - eight pigeon-hole codes.
+
+The script is safe to run again if necessary.
+
+---
+
+# Part 2 — Create login accounts
+
+## Step 4: Create your Admin account
+
+1. In Supabase, open **Authentication** → **Users**.
+2. Click **Add user** → **Create new user**.
+3. Enter your email and a password.
+4. Turn on **Auto Confirm User** if Supabase displays that option.
+5. Click **Create user**.
+6. Open **SQL Editor** → **New query** and run this, replacing the email:
+
+```sql
+update profiles
+set role = 'admin', is_super_admin = true
+where email = 'YOUR-EMAIL@example.com';
+```
+
+You now have an Admin login.
+
+## Step 5: Create a Picker account
+
+1. Return to **Authentication** → **Users**.
+2. Click **Add user** → **Create new user**.
+3. Use a different email and password.
+4. Enable **Auto Confirm User**, then create the user.
+
+New users are Pickers by default, so no SQL is needed.
+
+## Step 6: Create a Warehouse Staff account
+
+1. Create one more user in **Authentication** → **Users**.
+2. Open SQL Editor and run the query below. Replace the email:
+
+```sql
+update profiles
+set
+  role = 'warehouse_staff',
+  warehouse_id = (
+    select id from warehouses
+    where name = 'Demo Warehouse'
+    limit 1
+  )
+where email = 'WAREHOUSE-EMAIL@example.com';
+```
+
+Use separate email accounts for Admin, Picker, and Warehouse Staff. This
+keeps the audit trail clear.
+
+---
+
+# Part 3 — Get the public Supabase key
+
+## Step 7: Copy the anon/publishable key
+
+1. In Supabase, open **Project Settings**.
+2. Open **API Keys** (in some dashboard versions this is called **API**).
+3. Copy the **Publishable** key. If only legacy keys are shown, copy the
+   **anon public** key.
+
+Never copy the `service_role` or secret key into this app.
+
+The project URL is already:
+
+```text
+https://aetrwtubfifljkxwocpy.supabase.co
+```
+
+---
+
+# Part 4A — Run on your computer first
+
+You need [Node.js](https://nodejs.org/) installed. Use the current LTS
+version.
+
+Open a terminal in this repository and run:
+
+```bash
+cd app
+npm install
+cp .env.example .env.local
+```
+
+Open `app/.env.local` in a text editor. Replace:
+
+```text
+replace-with-your-anon-public-key
+```
+
+with the Publishable/anon key copied from Supabase.
+
+Then run:
+
+```bash
+npm run dev
+```
+
+Open the URL printed in the terminal, normally:
+
+```text
+http://localhost:5173
+```
+
+Log in using the Admin, Picker, or Warehouse Staff email/password you created.
+
+---
+
+# Part 4B — Put it online for free with Cloudflare Pages
+
+Do this after local testing works.
+
+1. Open [Cloudflare Dashboard](https://dash.cloudflare.com/).
+2. Open **Workers & Pages**.
+3. Click **Create** → **Pages** → **Connect to Git**.
+4. Connect GitHub and select the `Picker_app` repository.
+5. Set:
+
+| Setting | Value |
+|---|---|
+| Production branch | `main` |
+| Root directory | `app` |
+| Framework preset | `Vite` |
+| Build command | `npm run build` |
+| Build output directory | `dist` |
+
+6. Add these environment variables:
+
+| Name | Value |
+|---|---|
+| `VITE_SUPABASE_URL` | `https://aetrwtubfifljkxwocpy.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | Your Publishable/anon key |
+
+7. Click **Save and Deploy**.
+8. Cloudflare gives you a free URL ending in `.pages.dev`. Open it in Chrome.
+
+The repository includes `app/public/_redirects`, so `/picker`, `/sort-wall`,
+and `/admin` work when opened directly on Cloudflare Pages.
+
+---
+
+# Part 5 — Test the complete workflow
+
+## Step 8: Create a test order
+
+1. Log in with the Admin account.
+2. Open the **Admin** tab.
+3. Under **Create test order**, enter:
+   - Store reference: `STORE-DEMO`
+   - Bag count: `3`
+   - Floor: `2`
+   - Zone: `North`
+   - Address: `12 Market Rd`
+4. Click **Create order**.
+5. The generated shared bag code appears at the top. Click **Copy**.
+
+## Step 9: Pick the order
+
+1. Sign out.
+2. Sign in using the Picker account.
+3. Click **Go online**.
+4. Accept the available order.
+5. Open the order and click **Pick order**.
+6. Tap **Can't scan? Enter code manually**.
+7. Paste the bag code and submit it three times—once for each expected bag.
+8. Click **Done**, then **Go to dropoff**.
+
+For this MVP, every bag in an order uses the same code. The count increases
+once per scan action.
+
+## Step 10: Arrive and sort
+
+1. On the warehouse gate scanner, tap manual entry.
+2. Paste the `GATE-...` code displayed when
+   `supabase/bootstrap_demo.sql` ran.
+3. The app assigns a pigeon hole.
+4. Scan/enter the shared bag code.
+5. Enter the code for the assigned pigeon hole.
+6. Repeat until all three bags are sorted.
+
+You can find gate and hole codes again with:
+
+```sql
+select code_type, code_value, entity_id
+from qr_codes
+where status = 'active'
+order by code_type, created_at;
+```
+
+## Step 11: Dispatch from the Sort Wall
+
+1. Sign out.
+2. Sign in using the Warehouse Staff account.
+3. Open the **Sort Wall** tab.
+4. Find the green/filled pigeon hole.
+5. Click **Mark collected**.
+6. The order becomes dispatched and the pigeon hole becomes free.
+
+---
+
+# Troubleshooting
+
+## “Invalid login credentials”
+
+- Confirm the user exists under Supabase **Authentication** → **Users**.
+- Confirm **Auto Confirm User** was enabled, or confirm the user's email.
+- Re-enter the password.
+
+## “Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY”
+
+Your `.env.local` file or Cloudflare environment variables are missing.
+Repeat Part 3 and Part 4.
+
+## I only see one tab
+
+That is expected:
+
+- Picker login → Picker tab
+- Warehouse Staff login → Sort Wall tab
+- Admin login → Admin and Sort Wall tabs
+
+Permissions are enforced by Supabase, not only hidden visually.
+
+## Camera does not open
+
+- Camera access needs HTTPS, except `localhost`.
+- Allow camera permission in Chrome.
+- You can always use **Can't scan? Enter code manually**.
+
+## The README still looks empty
+
+PR #2 has not been merged. Open
+[PR #2](https://github.com/anirudhjakharnoon/Picker_app/pull/2), merge it, then
+refresh the repository's `main` branch.
+
+---
+
+## More documentation
+
+- [Detailed app documentation](app/README.md)
+- [Technical architecture](docs/TECHNICAL_DESIGN_DOCUMENT.md)
+- [Numbered database migrations](supabase/migrations/)
