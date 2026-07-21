@@ -135,12 +135,16 @@ Enter code manually" fallback and type the `code_value` shown in the
 npm run build
 ```
 
-Outputs a static `dist/` folder — deploy it to **Cloudflare Pages** (free
-tier, see Section 19.5 of the design doc for why this over Vercel/Netlify for
-this specific app): connect the repo, set the build command to `npm run
-build` and the output directory to `app/dist` (or `dist` if Cloudflare Pages
-is pointed directly at this `app/` folder), and add the two `VITE_*`
-environment variables from step 3 in the Cloudflare Pages project settings.
+Outputs a static `dist/` folder. The repository root includes `vercel.json`,
+so **Vercel Free** is the simplest deployment: import the GitHub repository,
+add the two `VITE_*` variables from step 3, and click Deploy. Vercel uses:
+
+- install: `npm --prefix app ci`
+- build: `npm --prefix app run build`
+- output: `app/dist`
+
+Cloudflare Pages also works: leave the root directory blank, use `npm run
+build`, and set the output directory to `app/dist`.
 
 ## Known limitations of this first pass (see the design doc for the full list)
 

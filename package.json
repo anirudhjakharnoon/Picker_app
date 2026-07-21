@@ -1,0 +1,10 @@
+{
+  "name": "picker-sort-wall",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "npm --prefix app ci && npm --prefix app run build",
+    "dev": "npm --prefix app run dev",
+    "lint": "npm --prefix app run lint"
+  }
+}

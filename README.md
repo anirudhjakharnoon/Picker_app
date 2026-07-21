@@ -2,11 +2,7 @@
 
 One website/PWA for Picker, Sort Wall, and Admin, backed by Supabase Free.
 
-> If this README only says `# Picker_app`, you are viewing the old `main`
-> branch. The application is currently in
-> [Pull Request #2](https://github.com/anirudhjakharnoon/Picker_app/pull/2).
-> Merge that pull request first, or switch to branch
-> `cursor/picker-sortwall-pwa-339b`.
+The application code is now merged into `main`.
 
 ## Before you start
 
@@ -14,8 +10,9 @@ You need free accounts for:
 
 1. [Supabase](https://supabase.com/) — you already created project
    `aetrwtubfifljkxwocpy`.
-2. [Cloudflare](https://dash.cloudflare.com/sign-up) — only needed when you
-   want a public website. Local testing does not need it.
+2. [Vercel](https://vercel.com/signup) or
+   [Cloudflare](https://dash.cloudflare.com/sign-up) — only needed when you
+   want a public website. Local testing does not need either one.
 3. GitHub — already used by this repository.
 
 There is no SMS OTP, paid push service, paid map, or paid backend server.
@@ -27,7 +24,7 @@ Login uses Supabase email/password, which is included in its free tier.
 
 ## Step 1: Open the one-file database setup
 
-After merging PR #2, open:
+Open:
 
 [`supabase/setup.sql`](supabase/setup.sql)
 
@@ -167,7 +164,55 @@ Log in using the Admin, Picker, or Warehouse Staff email/password you created.
 
 ---
 
-# Part 4B — Put it online for free with Cloudflare Pages
+# Part 4B — Put it online for free with Vercel (recommended)
+
+Yes, Vercel works. The previous Cloudflare error:
+
+```text
+Could not read package.json ... /repo/package.json
+```
+
+means the host ran the build from the repository root while the frontend
+package lives inside `app/`. It was a folder-configuration problem, not an
+application error. This repository now includes `vercel.json` and a root
+`package.json`, so Vercel knows the correct commands and output folder.
+
+1. First merge the Vercel deployment-fix pull request into `main`.
+2. Open [Vercel's New Project page](https://vercel.com/new).
+3. Sign in with GitHub.
+4. Find `Picker_app` and click **Import**.
+5. Vercel reads `vercel.json`; leave these automatically detected values
+   unchanged:
+
+| Setting | Value |
+|---|---|
+| Framework | `Vite` |
+| Install command | `npm --prefix app ci` |
+| Build command | `npm --prefix app run build` |
+| Output directory | `app/dist` |
+
+6. Open **Environment Variables** and add:
+
+| Name | Value |
+|---|---|
+| `VITE_SUPABASE_URL` | `https://aetrwtubfifljkxwocpy.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | Your Supabase Publishable/anon key |
+
+7. Click **Deploy**.
+8. When deployment finishes, click **Visit**. Vercel gives you a free URL
+   similar to `https://picker-app-xxxxx.vercel.app`.
+9. Copy that URL.
+10. In Supabase, open **Authentication** → **URL Configuration**:
+    - Set **Site URL** to the Vercel URL.
+    - Add `https://YOUR-VERCEL-URL/**` under **Redirect URLs**.
+    - Save.
+
+The `vercel.json` rewrite makes direct links such as `/picker`, `/sort-wall`,
+and `/admin` load the PWA instead of returning a 404.
+
+---
+
+# Part 4C — Alternative: Cloudflare Pages
 
 Do this after local testing works.
 
@@ -175,15 +220,16 @@ Do this after local testing works.
 2. Open **Workers & Pages**.
 3. Click **Create** → **Pages** → **Connect to Git**.
 4. Connect GitHub and select the `Picker_app` repository.
-5. Set:
+5. After the deployment-fix pull request is merged, either use the repository
+   root with:
 
 | Setting | Value |
 |---|---|
 | Production branch | `main` |
-| Root directory | `app` |
-| Framework preset | `Vite` |
+| Root directory | leave blank |
+| Framework preset | None |
 | Build command | `npm run build` |
-| Build output directory | `dist` |
+| Build output directory | `app/dist` |
 
 6. Add these environment variables:
 
@@ -269,7 +315,7 @@ order by code_type, created_at;
 
 ## “Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY”
 
-Your `.env.local` file or Cloudflare environment variables are missing.
+Your `.env.local`, Vercel, or Cloudflare environment variables are missing.
 Repeat Part 3 and Part 4.
 
 ## I only see one tab
@@ -288,11 +334,11 @@ Permissions are enforced by Supabase, not only hidden visually.
 - Allow camera permission in Chrome.
 - You can always use **Can't scan? Enter code manually**.
 
-## The README still looks empty
+## “Could not read package.json” during deployment
 
-PR #2 has not been merged. Open
-[PR #2](https://github.com/anirudhjakharnoon/Picker_app/pull/2), merge it, then
-refresh the repository's `main` branch.
+The host is building from the wrong folder or an old commit. Merge the latest
+deployment-fix pull request, redeploy from `main`, and use the exact Vercel or
+Cloudflare settings in Part 4B/4C.
 
 ---
 
