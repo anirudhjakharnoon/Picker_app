@@ -1,14 +1,30 @@
 import { enqueueAction, newClientEventId, type PendingActionType } from './offlineDb';
 import { onSync, trySyncNow, type SyncResult } from './syncEngine';
 
+export interface SubmitHandle {
+  /** The client-generated event id this specific call used (stable identity
+   * for idempotency and for matching a later `onSync` result). */
+  localId: string;
+  /** Resolves once the sync engine has processed this exact action — either
+   * with its result, or `null` if we're offline / it hasn't settled within
+   * the timeout. Awaiting this is appropriate when the caller genuinely
+   * needs the server's answer (e.g. a scan result, which decides the next
+   * screen) — never await it just to "unlock" a button, since that is
+   * exactly what makes taps feel unresponsive on a slow connection. */
+  settled: Promise<SyncResult | null>;
+}
+
 /**
  * Queue-first action submission used by every Picker-tab mutation.
  *
  * The action is written to the durable local queue FIRST, before any network
- * attempt (docs Section 10.2) — the UI can treat this call's return value as
- * "queued" immediately, whether or not it happens to resolve right away
- * below. If the device is online, we opportunistically drain the queue so
- * the common case still feels instant.
+ * attempt (docs Section 10.2). This function itself resolves as soon as that
+ * local write completes (near-instant IndexedDB write) — it does NOT wait for
+ * the network round trip. Callers that want optimistic, instantly-responsive
+ * buttons should update their UI right after `submitAction()` resolves and
+ * only use `settled` to reconcile/rollback later. Callers that need the
+ * server's answer before they can proceed (e.g. a scan) should `await
+ * handle.settled`.
  *
  * `buildPayload` receives a freshly generated client event id so callers can
  * include it as `p_client_event_id` for the scan/arrival RPCs that require it
@@ -20,24 +36,20 @@ export async function submitAction(
   type: PendingActionType,
   buildPayload: (clientEventId: string) => Record<string, unknown>,
   clientCapturedAt: string = new Date().toISOString()
-): Promise<{ localId: string; immediate: SyncResult | null }> {
+): Promise<SubmitHandle> {
   const localId = newClientEventId();
   const payload = buildPayload(localId);
-
   const dexieId = await enqueueAction(type, payload, localId, clientCapturedAt);
 
-  if (!navigator.onLine) {
-    return { localId, immediate: null };
-  }
+  // Kick the drain off in the background regardless of whether the caller
+  // awaits `settled` — this is what makes the common "online" path still
+  // resolve quickly for callers that DO await it, without making callers who
+  // don't await it block on anything.
+  if (navigator.onLine) void trySyncNow();
 
-  // `trySyncNow()` intentionally no-ops while another queue drain is active.
-  // Previously that made a newly queued warehouse-arrival action return
-  // `immediate: null` even while online. GateScanScreen then remained paused
-  // forever because it received neither success nor error. Subscribe before
-  // triggering the drain and keep nudging it until this exact Dexie row emits
-  // a result (or a conservative timeout is reached).
-  const immediate = await waitForActionResult(dexieId, 30_000);
-  return { localId, immediate };
+  const settled = navigator.onLine ? waitForActionResult(dexieId, 30_000) : Promise.resolve(null);
+
+  return { localId, settled };
 }
 
 function waitForActionResult(dexieId: number, timeoutMs: number): Promise<SyncResult | null> {

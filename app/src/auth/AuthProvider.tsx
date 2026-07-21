@@ -76,9 +76,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [session, loadProfile]);
 
+  const patchProfile = useCallback((patch: Partial<Profile>) => {
+    setProfile((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
+
   return (
     <AuthContext.Provider
-      value={{ session, profile, loading, error, signInWithPassword, signOut, refreshProfile }}
+      value={{
+        session,
+        profile,
+        loading,
+        error,
+        signInWithPassword,
+        signOut,
+        refreshProfile,
+        patchProfile,
+      }}
     >
       {children}
     </AuthContext.Provider>
