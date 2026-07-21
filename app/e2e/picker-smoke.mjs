@@ -440,10 +440,90 @@ async function testHoleDropFlowShowsArrivalScreenAndVisibleErrors() {
   });
 }
 
+async function testScanFailureDoesNotPermanentlyFreezeTheScanner() {
+  await withBrowser(async (browser) => {
+    const session = makeSession(PICKER_ID, 'picker@test.local');
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const HOLE_ID = 'hole-1';
+    let scanBagCallCount = 0;
+
+    await installSupabaseMock(page, [
+      [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
+      [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
+      [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile())],
+      [
+        (u) => u.includes('/rest/v1/orders'),
+        jsonRoute(200, [
+          order({ id: 'order-1', status: 'sorting_in_progress', assigned_picker_id: PICKER_ID, bag_count_expected: 2, bag_count_scanned_sort: 0 }),
+        ]),
+      ],
+      [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [])],
+      [
+        (u) => u.includes('/rest/v1/rpc/get_order_sorting_steps_v1'),
+        jsonRoute(200, [{ hole_id: HOLE_ID, hole_number: 'P-001', bags_reserved: 2, bags_sorted: 0, is_unlocked: true }]),
+      ],
+      [(u) => u.includes('/rest/v1/rpc/verify_pigeon_hole_v1'), jsonRoute(200, { hole_id: HOLE_ID, hole_number: 'P-001', dropped: 0, expected: 2 })],
+      [
+        // Simulates a genuine network-level failure (not a normal RPC
+        // rejection) on the FIRST bag scan — this is the class of failure
+        // an un-caught exception would previously leave permanently stuck
+        // with zero visible feedback.
+        (u) => u.includes('/rest/v1/rpc/scan_bag_into_pigeon_hole_v1'),
+        (route) => {
+          scanBagCallCount += 1;
+          if (scanBagCallCount === 1) return route.abort('connectionfailed');
+          return route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ dropped: 1, expected: 2, hole_complete: false, idempotent_replay: false }),
+          });
+        },
+      ],
+      [(u) => u.includes('/rest/v1/rpc/'), jsonRoute(200, {})],
+    ]);
+    await seedSession(page, session);
+    await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(800);
+
+    await page.click('button:has-text("Continue sorting")');
+    await page.waitForTimeout(400);
+    await page.click('.sorting-current-hole');
+    await page.waitForTimeout(300);
+    await page.click('button:has-text("Can\'t scan? Enter code manually")');
+    await page.fill('.qr-manual-entry input', 'HOLE-P-001');
+    await page.click('.qr-manual-entry button[type="submit"]');
+    await page.waitForTimeout(400);
+    await page.click('button:has-text("Scan Bags 0/2")');
+    await page.waitForTimeout(300);
+
+    // First attempt: simulated network failure.
+    await page.click('button:has-text("Can\'t scan? Enter code manually")');
+    await page.fill('.qr-manual-entry input', 'BAG-QR-1');
+    await page.click('.qr-manual-entry button[type="submit"]');
+    await page.waitForTimeout(500);
+    const errorToast = await page.textContent('.fullscreen-toast').catch(() => null);
+    check('a network-level scan failure shows a visible error instead of nothing', !!errorToast);
+
+    // Second attempt on the SAME screen, no reload: must actually go
+    // through, proving the first failure did not leave the scanner stuck.
+    await page.fill('.qr-manual-entry input', 'BAG-QR-1');
+    await page.click('.qr-manual-entry button[type="submit"]');
+    await page.waitForTimeout(500);
+    const afterRetryBody = (await page.textContent('body')) ?? '';
+    check(
+      'retrying the same scan after a failure succeeds (scanner was not left permanently stuck)',
+      afterRetryBody.includes('You have dropped Bag #1')
+    );
+
+    await page.close();
+  });
+}
+
 await testQueueRendersAndCardFields();
 await testHandoffBarDoesNotCoverPickButton();
 await testFullscreenScannerFitsAndHasVisibleClose();
 await testHoleDropFlowShowsArrivalScreenAndVisibleErrors();
+await testScanFailureDoesNotPermanentlyFreezeTheScanner();
 await testAdminOrderCreationFallsBackGracefully();
 
 const failed = results.filter((r) => !r.pass);
