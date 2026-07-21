@@ -32,37 +32,67 @@ export function AdminPage() {
     void loadRefData();
   }, []);
 
+  // PostgREST reports a missing function as a schema-cache lookup failure,
+  // named by whichever set of arguments the client actually sent (it does
+  // this rather than saying "wrong argument count" because RPC calls are
+  // matched by argument NAME, not position). We only expect to hit this
+  // specific case when p_is_fragile/p_store_name are sent to a project that
+  // hasn't applied migration 0005 yet — everything else should surface as a
+  // normal error.
+  const isMissingFunctionError = (message: string) =>
+    /could not find the function/i.test(message) || message.includes('PGRST202');
+
   const createOrder = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const form = new FormData(e.currentTarget);
-    // p_is_fragile / p_store_name require migration 0005. Send them only when
-    // used so projects that haven't applied 0005 can still create orders with
-    // the original 6-argument function.
+    // Capture the form element itself before any `await`: per the DOM spec,
+    // `Event.currentTarget` reverts to null once the event finishes
+    // dispatching, which happens long before an async handler resumes after
+    // its first `await` — reading `e.currentTarget` later throws
+    // "Cannot read properties of null". This is not React event pooling
+    // (removed in React 17+); it's the underlying native Event object.
+    const formEl = e.currentTarget;
+    const form = new FormData(formEl);
     const isFragile = form.get('fragile') === 'on';
     const storeName = (form.get('storeName') as string | null)?.trim() || null;
-    const args: Record<string, unknown> = {
+    const usedExtendedArgs = isFragile || !!storeName;
+
+    const baseArgs = {
       p_store_external_ref: form.get('storeRef'),
       p_bag_count: Number(form.get('bagCount')),
       p_store_floor: form.get('floor') || null,
       p_store_zone: form.get('zone') || null,
       p_store_address: form.get('address') || null,
     };
-    if (isFragile) args.p_is_fragile = true;
-    if (storeName) args.p_store_name = storeName;
+    const extendedArgs = {
+      ...baseArgs,
+      ...(isFragile ? { p_is_fragile: true } : {}),
+      ...(storeName ? { p_store_name: storeName } : {}),
+    };
 
-    const { data, error } = await supabase.rpc('admin_create_order_v1', args);
+    let { data, error } = await supabase.rpc('admin_create_order_v1', extendedArgs);
+
+    // Migration 0005 hasn't been applied to this project yet: fall back to
+    // the base 6-argument call automatically instead of blocking order
+    // creation entirely. This is exactly the case a beginner hits by simply
+    // leaving the pre-filled "Store display name" field in place.
+    let fellBack = false;
+    if (error && usedExtendedArgs && isMissingFunctionError(error.message)) {
+      fellBack = true;
+      ({ data, error } = await supabase.rpc('admin_create_order_v1', baseArgs));
+    }
+
     if (error) {
-      notify(
-        (isFragile || storeName)
-          ? `Failed: ${error.message} (the store-name / fragile options need migration 0005_order_fragile.sql)`
-          : `Failed: ${error.message}`
-      );
+      notify(`Failed: ${error.message}`);
     } else {
       const order = data as {
         external_order_ref: string;
         shared_bag_qr_code_id: string | null;
       };
-      notify(`Created order ${order.external_order_ref}`);
+      notify(
+        fellBack
+          ? `Created order ${order.external_order_ref}. Store name/fragile were skipped — run migration 0005_order_fragile.sql to enable them.`
+          : `Created order ${order.external_order_ref}`
+      );
       if (order.shared_bag_qr_code_id) {
         const { data: qr } = await supabase
           .from('qr_codes')
@@ -80,12 +110,13 @@ export function AdminPage() {
         }
       }
     }
-    e.currentTarget.reset();
+    formEl.reset();
   };
 
   const createHoles = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const form = new FormData(e.currentTarget);
+    const formEl = e.currentTarget;
+    const form = new FormData(formEl);
     const { data, error } = await supabase.rpc('admin_create_pigeon_holes_v1', {
       p_sort_wall_id: form.get('sortWallId'),
       p_count: Number(form.get('count')),
