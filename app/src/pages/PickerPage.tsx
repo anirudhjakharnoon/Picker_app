@@ -507,7 +507,7 @@ function HandoffBar({
       </div>
       <OrderAcceptSwipe
         disabled={!canHandoff}
-        disabledMessage="Finish all in-progress orders before handoff."
+        disabledMessage="Finish in-progress orders before handoff"
         label="Swipe right to Go to handoff"
         busyLabel="Opening handoff…"
         onAccepted={onGoToHandoff}
