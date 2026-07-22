@@ -58,6 +58,12 @@ export function AppMenu({ tabs, role }: { tabs: string[]; role: UserRole }) {
 
       {open && (
         <div className="app-menu-panel" role="menu">
+          <div className="app-menu-brand">
+            <span className="brand-wordmark">
+              Dubai Mall
+              <span className="brand-wordmark-sub">Delivery ops</span>
+            </span>
+          </div>
           <div className="app-menu-user">
             <strong>{profile?.full_name ?? profile?.email}</strong>
             <span className="app-menu-role">{role.replace(/_/g, ' ')}</span>

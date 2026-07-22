@@ -23,7 +23,10 @@ export function LoginPage() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <h1>Sort Wall &amp; Picker</h1>
+        <span className="brand-wordmark auth-wordmark">
+          Dubai Mall
+          <span className="brand-wordmark-sub">Delivery ops · picker &amp; sort wall</span>
+        </span>
         <p className="auth-subtitle">
           {mode === 'picker' ? 'Pickers sign in with the mobile number and login code issued in Manpower.' : 'Staff sign in with the email and password an admin created for you.'}
         </p>
