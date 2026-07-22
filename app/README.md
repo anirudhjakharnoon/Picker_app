@@ -56,10 +56,10 @@ node scripts/build-supabase-setup.mjs
 
 If this project is already running, do **not** paste the whole `setup.sql`
 again. Run only the newest numbered migrations you have not applied yet in
-the Supabase SQL Editor (for example `0010_auto_assignment_manpower.sql`,
-then `0011_admin_create_picker.sql`). Migration **0011** adds
-`admin_create_picker_v1`, which the Manpower page uses to create pickers
-without deploying an Edge Function.
+the Supabase SQL Editor (for example `0010` … `0012`). Migration **0011**
+adds `admin_create_picker_v1` (Manpower create without an Edge Function);
+**0012** improves mobile normalisation and returns field-specific error
+messages.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this
