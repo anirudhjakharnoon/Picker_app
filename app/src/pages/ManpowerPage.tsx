@@ -52,17 +52,22 @@ export function ManpowerPage() {
   const createPicker = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const { data, error } = await supabase.functions.invoke('manpower-create-picker', {
-      body: {
-        full_name: form.get('name'),
-        phone: form.get('phone'),
-        login_code: form.get('loginCode'),
-        zone: allZones ? null : form.get('zone'),
-        all_zones: allZones,
-      },
+    const { data, error } = await supabase.rpc('admin_create_picker_v1', {
+      p_full_name: String(form.get('name') ?? ''),
+      p_phone: String(form.get('phone') ?? ''),
+      p_login_code: String(form.get('loginCode') ?? ''),
+      p_zone: allZones ? null : String(form.get('zone') ?? ''),
+      p_all_zones: allZones,
     });
     if (error) {
-      notify(`Could not create picker: ${error.message}`);
+      const message = error.message.includes('mobile already exists')
+        ? 'That mobile number is already assigned to a picker.'
+        : error.message.includes('invalid picker details')
+          ? 'Check the name, mobile number, login code (6–8 digits), and zone.'
+          : error.message.includes('admin_create_picker_v1')
+            ? 'Picker create is not installed yet. Run migration 0011_admin_create_picker.sql in the Supabase SQL editor, then try again.'
+            : error.message;
+      notify(`Could not create picker: ${message}`);
       return;
     }
     setCreated(data as CreatedPicker);

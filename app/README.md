@@ -55,10 +55,11 @@ node scripts/build-supabase-setup.mjs
 ### Upgrade an existing project
 
 If this project is already running, do **not** paste the whole `setup.sql`
-again. Run only `supabase/migrations/0006_operations_capacity_and_qr.sql` in
-Supabase SQL Editor. It adds the capacity/configuration fields, rotating gate
-QR RPC, multi-hole allocation, manual picker assignment, and guarded order
-reset RPC.
+again. Run only the newest numbered migrations you have not applied yet in
+the Supabase SQL Editor (for example `0010_auto_assignment_manpower.sql`,
+then `0011_admin_create_picker.sql`). Migration **0011** adds
+`admin_create_picker_v1`, which the Manpower page uses to create pickers
+without deploying an Edge Function.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this
