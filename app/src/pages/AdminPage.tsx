@@ -102,7 +102,10 @@ export function AdminPage() {
     }
 
     if (error) {
-      notify(`Failed: ${error.message}`);
+      const message = /is_fragile/i.test(error.message)
+        ? 'orders.is_fragile is missing. Run migration 0013_ensure_order_is_fragile.sql (or 0005_order_fragile.sql) in the Supabase SQL editor, then try again.'
+        : error.message;
+      notify(`Failed: ${message}`);
     } else {
       const order = data as {
         external_order_ref: string;
