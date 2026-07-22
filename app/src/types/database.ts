@@ -143,6 +143,10 @@ export interface OperationsConfiguration {
   auto_assign_enabled?: boolean;
   assignment_policy?: 'least_active_orders';
   null_zone_matches_all_pickers?: boolean;
+  // Optional: only present once migration 0014 has been applied. Controls how
+  // many bags a picker scans per shipment ('all_bags' = every bag at pickup and
+  // drop-off; 'one_bag' = a single scan confirms the whole shipment).
+  bag_scan_mode?: 'all_bags' | 'one_bag';
 }
 
 export interface Notification {
