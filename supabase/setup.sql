@@ -19,6 +19,7 @@
 --   - 0010_auto_assignment_manpower.sql
 --   - 0011_admin_create_picker.sql
 --   - 0012_picker_create_clear_errors.sql
+--   - 0013_ensure_order_is_fragile.sql
 -- ============================================================================
 
 
@@ -3735,4 +3736,22 @@ grant execute on function admin_create_picker_v1(text, text, text, text, boolean
 notify pgrst, 'reload schema';
 
 -- ========================= END 0012_picker_create_clear_errors.sql =========================
+
+
+-- ======================== BEGIN 0013_ensure_order_is_fragile.sql ========================
+
+-- ============================================================================
+-- 0013_ensure_order_is_fragile.sql
+-- admin_create_order_v1 (from 0005/0010) inserts into orders.is_fragile.
+-- Projects that applied later migrations without 0005 fail with:
+--   column "is_fragile" of relation "orders" does not exist
+-- This migration is idempotent and safe to re-run.
+-- ============================================================================
+
+alter table orders
+  add column if not exists is_fragile boolean not null default false;
+
+notify pgrst, 'reload schema';
+
+-- ========================= END 0013_ensure_order_is_fragile.sql =========================
 
