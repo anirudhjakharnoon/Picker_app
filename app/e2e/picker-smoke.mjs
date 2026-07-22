@@ -111,7 +111,7 @@ async function testQueueRendersAndCardFields() {
       [
         (u) => u.includes('/rest/v1/orders'),
         jsonRoute(200, [
-          order({ id: 'o1', status: 'available' }),
+          order({ id: 'o1', status: 'assigned', assigned_picker_id: PICKER_ID }),
         ]),
       ],
       [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
@@ -129,15 +129,15 @@ async function testQueueRendersAndCardFields() {
     const meaningfulErrors = consoleErrors.filter((e) => !/realtime|websocket/i.test(e));
 
     check('no persistent header/title bar (only the hamburger)', !body.includes('Picker & Sort Wall'));
-    check('shows the available offer in the Pending pickup tab', body.includes('Pending pickup (1)'));
+    check('shows the auto-assigned order in the Pending tab', body.includes('Pending (1)'));
     check('order card shows "Pickup from:" + bold store name', body.includes('Pickup from:') && body.includes('Buffalo Burger'));
     check('order card shows "Floor:" and "Zone:" as separate lines', body.includes('Floor:') && body.includes('4th') && body.includes('Zone: C'));
     check('fragile order shows the Fragile Items badge', body.includes('Fragile Items'));
     check('no floating "Picked up orders" pill (removed per feedback)', !body.includes('Picked up orders'));
 
-    const handoffButton = await page.$('.handoff-button');
-    const isDisabled = handoffButton ? await handoffButton.isDisabled() : null;
-    check('handoff button is disabled while an order is still in progress', isDisabled === true);
+    const handoffSwipe = await page.$('.handoff-bar .order-accept-swipe');
+    const handoffDisabled = handoffSwipe ? await handoffSwipe.evaluate((el) => el.classList.contains('is-disabled')) : null;
+    check('handoff swipe is disabled while an order is still in progress', handoffDisabled === true);
 
     check('no unexpected console errors on the queue screen', meaningfulErrors.length === 0);
     await page.close();
@@ -153,7 +153,7 @@ async function testHandoffBarDoesNotCoverPickButton() {
       [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
       [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
       [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile())],
-      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'available' }), order({ id: 'o2', status: 'picked', assigned_picker_id: PICKER_ID })])],
+      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'assigned', assigned_picker_id: PICKER_ID }), order({ id: 'o2', status: 'picked', assigned_picker_id: PICKER_ID })])],
       [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
     ]);
     await seedSession(page, session);
@@ -183,7 +183,7 @@ async function testFullscreenScannerFitsAndHasVisibleClose() {
       [(u) => u.includes('/auth/v1/token'), jsonRoute(200, session)],
       [(u) => u.includes('/auth/v1/user'), jsonRoute(200, session.user)],
       [(u) => u.includes('/rest/v1/profiles'), jsonRoute(200, profile())],
-      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'available' })])],
+      [(u) => u.includes('/rest/v1/orders'), jsonRoute(200, [order({ id: 'o1', status: 'picking_in_progress', assigned_picker_id: PICKER_ID })])],
       [(u) => u.includes('/rest/v1/stores'), jsonRoute(200, [{ id: STORE_ID, external_ref: 'BUFFALO', name: 'Buffalo Burger', default_zone: 'C', status: 'active' }])],
       [
         (u) => u.includes('/rest/v1/rpc/scan_bag_pickup_v1'),
@@ -195,12 +195,9 @@ async function testFullscreenScannerFitsAndHasVisibleClose() {
     await page.goto(`${BASE_URL}/picker`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(800);
 
-    const accept = page.locator('.order-accept-swipe');
-    const acceptBox = await accept.boundingBox();
-    await page.mouse.move(acceptBox.x + 20, acceptBox.y + acceptBox.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(acceptBox.x + acceptBox.width - 20, acceptBox.y + acceptBox.height / 2, { steps: 8 });
-    await page.mouse.up();
+    await page.click('button:has-text(\"Continue picking\")');
+    await page.waitForTimeout(300);
+    await page.click('button:has-text(\"Start picking\")');
     await page.waitForTimeout(500);
 
     const sheetBox = await page.$eval('.fullscreen-sheet', (el) => el.getBoundingClientRect());

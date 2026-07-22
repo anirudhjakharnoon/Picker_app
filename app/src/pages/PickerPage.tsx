@@ -7,12 +7,13 @@ import { supabase } from '../lib/supabaseClient';
 import { QrScannerView } from '../components/QrScannerView';
 import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
-import { CheckIcon, PinIcon, ChevronsIcon } from '../components/icons';
+import { CheckIcon, PinIcon } from '../components/icons';
 import type { Order } from '../types/database';
 import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
 
 type Screen =
   | { name: 'queue' }
+  | { name: 'order-detail'; orderId: string }
   | { name: 'scan-pickup'; orderId: string }
   | { name: 'dropoff' }
   | { name: 'scan-gate' }
@@ -43,6 +44,14 @@ export function PickerPage() {
   const [screen, setScreen] = useState<Screen>({ name: 'queue' });
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
   const [toast, setToast] = useState<string | null>(null);
+
+  // Picker login means available for automatic zone assignment. This is a
+  // presence heartbeat, not an offline-mode toggle (the app is online-only).
+  useEffect(() => {
+    if (profile?.role === 'picker' && !profile.is_online) {
+      void supabase.rpc('set_picker_status_v1', { p_is_online: true });
+    }
+  }, [profile?.id, profile?.is_online, profile?.role]);
 
   // The handoff bar is `position: fixed`, so the scrollable content behind
   // it needs bottom padding reserved for exactly its rendered height — a
@@ -87,16 +96,17 @@ export function PickerPage() {
     [orders, profile?.id]
   );
 
-  // "Pending pickup" — unassigned offers visible for swipe-accept.
+  // Automatically assigned orders stay in Pending until the picker confirms
+  // the journey with the Go to store swipe.
   const pendingPickup = useMemo(
-    () => orders.filter((o) => o.status === 'available'),
-    [orders]
+    () => myOrders.filter((o) => o.status === 'assigned'),
+    [myOrders]
   );
   // "In progress" starts at acceptance, not just the first scanned bag. This
   // is the one active work item that locks the picker out of other offers
   // until every bag is collected.
   const inProgress = useMemo(
-    () => myOrders.filter((o) => ['assigned', 'picking_in_progress'].includes(o.status)),
+    () => myOrders.filter((o) => o.status === 'picking_in_progress'),
     [myOrders]
   );
   // "Picked up" — every bag scanned, not yet dropped off at the warehouse.
@@ -131,7 +141,18 @@ export function PickerPage() {
     }
     await refetch();
     setActiveTab('in_progress');
-    setScreen({ name: 'scan-pickup', orderId: order.id });
+    setScreen({ name: 'order-detail', orderId: order.id });
+  };
+
+  const goToStore = async (order: Order) => {
+    const { error } = await supabase.rpc('picker_go_to_store_v1', { p_order_id: order.id });
+    if (error) {
+      notify(`Cannot start this store: ${error.message}`);
+      return;
+    }
+    await refetch();
+    setActiveTab('in_progress');
+    setScreen({ name: 'order-detail', orderId: order.id });
   };
 
   const tabOrders: Record<QueueTab, Order[]> = {
@@ -156,21 +177,21 @@ export function PickerPage() {
 
         <>
             <div className="filter-chips" role="tablist" aria-label="Order filters">
-              {inProgress.length === 0 && <FilterChip
-                label={`Pending pickup${pendingPickup.length ? ` (${pendingPickup.length})` : ''}`}
+              <FilterChip
+                label={`Pending${pendingPickup.length ? ` (${pendingPickup.length})` : ''}`}
                 active={activeTab === 'pending'}
                 onClick={() => setActiveTab('pending')}
-              />}
+              />
               <FilterChip
                 label={`In progress${inProgress.length ? ` (${inProgress.length})` : ''}`}
                 active={activeTab === 'in_progress'}
                 onClick={() => setActiveTab('in_progress')}
               />
-              {inProgress.length === 0 && <FilterChip
+              <FilterChip
                 label={`Picked up${pickedUp.length ? ` (${pickedUp.length})` : ''}`}
                 active={activeTab === 'picked_up'}
                 onClick={() => setActiveTab('picked_up')}
-              />}
+              />
             </div>
 
             {inSorting.length > 0 && (
@@ -192,9 +213,10 @@ export function PickerPage() {
                   key={o.id}
                   order={o}
                   storeName={storeNameFor(o)}
-                  pickerHasActiveOrder={inProgress.length > 0 || myOrders.some((order) => order.status === 'assigned')}
+                  pickerHasActiveOrder={inProgress.length > 0}
                   onAccept={() => void acceptOrder(o)}
-                  onContinue={() => setScreen({ name: 'scan-pickup', orderId: o.id })}
+                  onGoToStore={() => void goToStore(o)}
+                  onContinue={() => setScreen({ name: 'order-detail', orderId: o.id })}
                 />
               ))}
             </div>
@@ -207,6 +229,36 @@ export function PickerPage() {
               onGoToHandoff={() => setScreen({ name: 'dropoff' })}
             />
         </>
+      </div>
+    );
+  }
+
+  if (screen.name === 'order-detail') {
+    const order = orders.find((candidate) => candidate.id === screen.orderId);
+    if (!order) {
+      return <div className="picker-screen"><div className="empty-state">This order is no longer assigned to you.</div></div>;
+    }
+    return (
+      <div className="picker-screen">
+        <SheetHeader title="Order details" onClose={() => setScreen({ name: 'queue' })} />
+        <article className="order-card">
+          <div className="order-card-head">
+            <span className="order-number">{order.external_order_ref}</span>
+            <span className="state-pill state-progress">In progress</span>
+          </div>
+          <div className="order-card-body">
+            <p className="order-line">Pickup from: <strong>{storeNameFor(order)}</strong></p>
+            {order.store_floor && <p className="order-line">Floor: <strong>{order.store_floor}</strong></p>}
+            {order.store_zone && <p className="order-line">Zone: {order.store_zone}</p>}
+            {order.store_address && <p className="order-line muted">{order.store_address}</p>}
+          </div>
+          <div className="order-card-foot"><span className="bag-count">{order.bag_count_expected} Bags</span></div>
+        </article>
+        <div className="sheet-footer">
+          <button type="button" className="dark-button" onClick={() => setScreen({ name: 'scan-pickup', orderId: order.id })}>
+            {order.bag_count_scanned_pickup > 0 ? 'Continue picking' : 'Start picking'}
+          </button>
+        </div>
       </div>
     );
   }
@@ -358,12 +410,14 @@ function OrderCard({
   storeName,
   pickerHasActiveOrder,
   onAccept,
+  onGoToStore,
   onContinue,
 }: {
   order: Order;
   storeName: string;
   pickerHasActiveOrder: boolean;
   onAccept: () => void;
+  onGoToStore: () => void;
   onContinue: () => void;
 }) {
   const inProgress = order.status === 'picking_in_progress';
@@ -409,9 +463,18 @@ function OrderCard({
           onAccepted={onAccept}
         />
       )}
-      {order.status === 'assigned' || inProgress ? (
+      {order.status === 'assigned' && (
+        <OrderAcceptSwipe
+          disabled={pickerHasActiveOrder}
+          disabledMessage="Finish your in-progress store before going to another store."
+          label="Swipe right to Go to store"
+          busyLabel="Starting store…"
+          onAccepted={onGoToStore}
+        />
+      )}
+      {inProgress ? (
         <button type="button" className="pick-button" onClick={onContinue}>
-          {inProgress ? 'Continue picking' : 'Start picking'}
+          Continue picking
         </button>
       ) : null}
     </article>
@@ -442,22 +505,13 @@ function HandoffBar({
           <PinIcon /> {spot}
         </span>
       </div>
-      <button
-        type="button"
-        className={`handoff-button ${canHandoff ? 'active' : ''}`}
+      <OrderAcceptSwipe
         disabled={!canHandoff}
-        onClick={onGoToHandoff}
-        title={
-          canHandoff
-            ? undefined
-            : 'Finish picking up every assigned order before you can go to handoff.'
-        }
-      >
-        <span className="handoff-chevrons">
-          <ChevronsIcon />
-        </span>
-        Go to handoff
-      </button>
+        disabledMessage="Finish all in-progress orders before handoff."
+        label="Swipe right to Go to handoff"
+        busyLabel="Opening handoff…"
+        onAccepted={onGoToHandoff}
+      />
     </div>
   );
 }

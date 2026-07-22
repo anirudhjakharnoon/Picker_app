@@ -12,10 +12,14 @@ const ACCEPT_THRESHOLD = 0.72;
 export function OrderAcceptSwipe({
   disabled = false,
   disabledMessage,
+  label = 'Swipe right to accept',
+  busyLabel = 'Working…',
   onAccepted,
 }: {
   disabled?: boolean;
   disabledMessage?: string;
+  label?: string;
+  busyLabel?: string;
   onAccepted: () => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -42,7 +46,7 @@ export function OrderAcceptSwipe({
       ref={trackRef}
       className={`order-accept-swipe ${dragging ? 'is-dragging' : ''} ${disabled ? 'is-disabled' : ''} ${accepted ? 'is-accepted' : ''}`}
       aria-disabled={disabled}
-      title={disabled ? disabledMessage : 'Swipe right to accept order'}
+      title={disabled ? disabledMessage : label}
       onPointerDown={(event) => {
         if (disabled || accepted) return;
         pointerStartX.current = event.clientX;
@@ -62,7 +66,7 @@ export function OrderAcceptSwipe({
       }}
     >
       <span className="order-accept-fill" style={{ transform: `scaleX(${progress})` }} />
-      <span className="order-accept-label">{accepted ? 'Accepting…' : disabled ? 'Current order in progress' : 'Swipe right to accept'}</span>
+      <span className="order-accept-label">{accepted ? busyLabel : disabled ? disabledMessage ?? 'Unavailable' : label}</span>
       <span className="order-accept-thumb" style={{ left: `calc(${progress * 100}% - ${progress * 54}px)` }} aria-hidden="true">
         ›
       </span>

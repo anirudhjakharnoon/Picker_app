@@ -42,6 +42,9 @@ export interface Profile {
   current_lat: number | null;
   current_lng: number | null;
   home_zone: string | null;
+  phone_e164?: string | null;
+  picker_code?: string | null;
+  all_zones?: boolean;
   max_concurrent_orders: number;
   is_super_admin: boolean;
   created_at: string;
@@ -137,6 +140,9 @@ export interface OperationsConfiguration {
   bags_per_pigeon_hole: number;
   updated_at: string;
   updated_by_user_id: string | null;
+  auto_assign_enabled?: boolean;
+  assignment_policy?: 'least_active_orders';
+  null_zone_matches_all_pickers?: boolean;
 }
 
 export interface Notification {

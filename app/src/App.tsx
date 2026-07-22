@@ -6,6 +6,7 @@ import { LoginPage } from './pages/LoginPage';
 import { PickerPage } from './pages/PickerPage';
 import { SortWallPage } from './pages/SortWallPage';
 import { AdminPage } from './pages/AdminPage';
+import { ManpowerPage } from './pages/ManpowerPage';
 import { AppMenu } from './components/AppMenu';
 import type { UserRole } from './types/database';
 
@@ -17,6 +18,7 @@ const TAB_ACCESS: Record<string, UserRole[]> = {
   '/picker': ['picker'],
   '/sort-wall': ['warehouse_staff', 'ops_manager', 'admin'],
   '/admin': ['admin'],
+  '/manpower': ['admin'],
 };
 
 function defaultRouteFor(role: UserRole): string {
@@ -59,6 +61,7 @@ function AppShell() {
             }
           />
           <Route path="/admin" element={<Guarded role={profile.role} allowed={['admin']}><AdminPage /></Guarded>} />
+          <Route path="/manpower" element={<Guarded role={profile.role} allowed={['admin']}><ManpowerPage /></Guarded>} />
           <Route path="*" element={<Navigate to={defaultRouteFor(profile.role)} replace />} />
         </Routes>
       </main>
