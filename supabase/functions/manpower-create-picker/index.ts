@@ -1,3 +1,6 @@
+// OPTIONAL — preferred path is the Postgres RPC admin_create_picker_v1
+// (migration 0011), which does not require deploying this function.
+//
 // Deploy with:
 //   supabase functions deploy manpower-create-picker --no-verify-jwt
 //

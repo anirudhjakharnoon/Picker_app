@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { toPickerAuthEmail } from '../lib/pickerAuth';
 
 export function LoginPage() {
   const { signInWithPassword, error } = useAuth();
@@ -13,9 +14,7 @@ export function LoginPage() {
     e.preventDefault();
     setSubmitting(true);
     setLocalError(null);
-    const identifier = mode === 'picker'
-      ? `p${email.replace(/\D/g, '')}@picker.internal`
-      : email.trim();
+    const identifier = mode === 'picker' ? toPickerAuthEmail(email) : email.trim();
     const { error: signInError } = await signInWithPassword(identifier, password);
     setSubmitting(false);
     if (signInError) setLocalError(signInError);
