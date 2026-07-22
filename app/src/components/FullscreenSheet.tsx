@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { CloseIcon } from './icons';
+import type { Toast } from '../lib/useToast';
 
 /**
  * A fullscreen, non-scrolling overlay used for every camera-scanning screen
@@ -26,7 +27,7 @@ export function FullscreenSheet({
    * must pass its current toast value through for errors to actually be
    * seen during scanning.
    */
-  toast?: string | null;
+  toast?: Toast | null;
   children: ReactNode;
 }) {
   useEffect(() => {
@@ -50,8 +51,8 @@ export function FullscreenSheet({
         </button>
       )}
       {toast && (
-        <div className="toast fullscreen-toast" role="alert">
-          {toast}
+        <div className={`toast fullscreen-toast is-${toast.variant}`} role="alert">
+          {toast.text}
         </div>
       )}
       <div className="fullscreen-content">{children}</div>

@@ -4,6 +4,9 @@ import { useOrders } from '../lib/useOrders';
 import { QrCodePreview } from '../components/QrCodePreview';
 import { WarehouseGateQr } from '../components/WarehouseGateQr';
 import { EyeIcon } from '../components/icons';
+import { StatusPill } from '../components/StatusPill';
+import { orderStatusMeta, holeStatusMeta } from '../lib/status';
+import { useToast } from '../lib/useToast';
 import type { OperationsConfiguration, Profile, PigeonHole, SortWall, Warehouse } from '../types/database';
 
 /**
@@ -16,7 +19,7 @@ import type { OperationsConfiguration, Profile, PigeonHole, SortWall, Warehouse 
 export function AdminPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [sortWalls, setSortWalls] = useState<SortWall[]>([]);
-  const [toast, setToast] = useState<string | null>(null);
+  const { toast, notify } = useToast(5000);
   const [generatedCodes, setGeneratedCodes] = useState<
     { label: string; value: string }[]
   >([]);
@@ -27,11 +30,6 @@ export function AdminPage() {
   const [assigningOrderId, setAssigningOrderId] = useState<string | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState('');
   const [viewingHole, setViewingHole] = useState<{ hole: PigeonHole; value: string } | null>(null);
-
-  const notify = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 5000);
-  };
 
   const loadRefData = async () => {
     const [w, sw, pickerRows, configRows, holeRows] = await Promise.all([
@@ -105,7 +103,7 @@ export function AdminPage() {
       const message = /is_fragile/i.test(error.message)
         ? 'orders.is_fragile is missing. Run migration 0013_ensure_order_is_fragile.sql (or 0005_order_fragile.sql) in the Supabase SQL editor, then try again.'
         : error.message;
-      notify(`Failed: ${message}`);
+      notify(`Failed: ${message}`, 'error');
     } else {
       const order = data as {
         external_order_ref: string;
@@ -113,8 +111,9 @@ export function AdminPage() {
       };
       notify(
         fellBack
-          ? `Created order ${order.external_order_ref}. Store name/fragile were skipped — run migration 0005_order_fragile.sql to enable them.`
-          : `Created order ${order.external_order_ref}`
+          ? `Created order ${order.external_order_ref}. Store name and Fragile aren't enabled on this environment yet.`
+          : `Created order ${order.external_order_ref}`,
+        'success',
       );
       if (order.shared_bag_qr_code_id) {
         const { data: qr } = await supabase
@@ -146,10 +145,10 @@ export function AdminPage() {
       p_prefix: form.get('prefix') || 'P',
     });
     if (error) {
-      notify(`Failed: ${error.message}`);
+      notify(`Failed: ${error.message}`, 'error');
     } else {
       const holes = (data as { hole_number: string; qr_code_id: string | null }[]) ?? [];
-      notify(`Created ${holes.length} pigeon holes`);
+      notify(`Created ${holes.length} pigeon holes`, 'success');
       const qrIds = holes.flatMap((hole) => (hole.qr_code_id ? [hole.qr_code_id] : []));
       if (qrIds.length > 0) {
         const { data: qrRows } = await supabase
@@ -187,9 +186,9 @@ export function AdminPage() {
       p_picker_id: pickerId,
     });
     setAssigningOrderId(null);
-    if (error) notify(`Could not assign picker: ${error.message}`);
+    if (error) notify(`Could not assign picker: ${error.message}`, 'error');
     else {
-      notify('Picker assigned.');
+      notify('Picker assigned.', 'success');
       void refetchOrders();
     }
   };
@@ -202,7 +201,7 @@ export function AdminPage() {
       p_bags_per_pigeon_hole: Number(form.get('bagsPerHole')),
     });
     if (error) {
-      notify(`Could not save configuration: ${error.message}`);
+      notify(`Could not save configuration: ${error.message}`, 'error');
       return;
     }
     const { error: assignmentError } = await supabase.rpc('admin_update_assignment_configuration_v1', {
@@ -210,18 +209,21 @@ export function AdminPage() {
       p_null_zone_matches_all_pickers: form.get('nullZoneAll') === 'on',
     });
     if (assignmentError) {
-      notify(`Order capacity saved, but assignment settings failed: ${assignmentError.message}`);
+      // Partial save: reload so the form reflects what actually persisted.
+      await loadRefData();
+      notify(`Order capacity saved, but assignment settings failed: ${assignmentError.message}`, 'error');
       return;
     }
     const { data: scanModeData, error: scanModeError } = await supabase.rpc('admin_set_bag_scan_mode_v1', {
       p_bag_scan_mode: form.get('bagScanMode') === 'one_bag' ? 'one_bag' : 'all_bags',
     });
     if (scanModeError) {
-      notify(`Capacity saved, but bag scan mode failed: ${scanModeError.message}`);
+      await loadRefData();
+      notify(`Capacity saved, but bag scan mode failed: ${scanModeError.message}`, 'error');
       return;
     }
     setConfiguration((scanModeData as OperationsConfiguration) ?? (data as OperationsConfiguration));
-    notify('Operations configuration saved. It applies to all pickers and free pigeon holes.');
+    notify('Operations configuration saved. It applies to all pickers and free pigeon holes.', 'success');
     void loadRefData();
   };
 
@@ -230,12 +232,12 @@ export function AdminPage() {
       p_confirmation: resetConfirmation,
     });
     if (error) {
-      notify(`Could not reset orders: ${error.message}`);
+      notify(`Could not reset orders: ${error.message}`, 'error');
       return;
     }
     setResetConfirmation('');
     setGeneratedCodes([]);
-    notify(`Deleted ${data as number} test order(s). Pigeon holes have been released.`);
+    notify(`Deleted ${data as number} test order(s). Pigeon holes have been released.`, 'success');
     void refetchOrders();
     void loadRefData();
   };
@@ -245,7 +247,7 @@ export function AdminPage() {
 
   const viewHoleQr = async (hole: PigeonHole) => {
     if (!hole.qr_code_id) {
-      notify('This pigeon hole does not have a QR code yet.');
+      notify('This pigeon hole does not have a QR code yet.', 'error');
       return;
     }
     const { data, error } = await supabase
@@ -254,7 +256,7 @@ export function AdminPage() {
       .eq('id', hole.qr_code_id)
       .maybeSingle();
     if (error || !data) {
-      notify(`Could not load pigeon-hole QR: ${error?.message ?? 'not found'}`);
+      notify(`Could not load pigeon-hole QR: ${error?.message ?? 'not found'}`, 'error');
       return;
     }
     setViewingHole({ hole, value: (data as { code_value: string }).code_value });
@@ -262,7 +264,7 @@ export function AdminPage() {
 
   return (
     <div className="admin-screen">
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
 
       <header className="panel-heading">
         <div>
@@ -289,7 +291,7 @@ export function AdminPage() {
                   type="button"
                   onClick={() => {
                     void navigator.clipboard.writeText(code.value);
-                    notify('Code copied.');
+                    notify('Code copied.', 'success');
                   }}
                 >
                   Copy
@@ -416,7 +418,7 @@ export function AdminPage() {
       <section className="admin-live-orders">
         <h2>Live orders</h2>
         <p className="hint">Status and assignment update live. Available orders can be manually assigned to an active picker.</p>
-        {orders.length === 0 && <p className="empty-state">No orders yet.</p>}
+        {orders.length === 0 && <p className="empty-state">No orders yet. Create a test order above to see it here.</p>}
         {orders.map((order) => {
           const picker = order.assigned_picker_id ? pickerById.get(order.assigned_picker_id) : null;
           const hole = order.pigeon_hole_id ? holeById.get(order.pigeon_hole_id) : null;
@@ -424,9 +426,7 @@ export function AdminPage() {
             <div className="admin-order-row" key={order.id}>
               <div>
                 <strong>{order.external_order_ref}</strong>
-                <span className={`state-pill state-${order.status === 'picked' ? 'picked' : order.status === 'picking_in_progress' ? 'progress' : 'ready'}`}>
-                  {adminOrderStatus(order.status)}
-                </span>
+                <StatusPill meta={orderStatusMeta(order.status)} />
                 <p>Picker: {picker?.full_name ?? picker?.email ?? 'Unassigned'}</p>
                 <p>Pigeon hole: {hole?.hole_number ?? 'Not assigned yet'}</p>
               </div>
@@ -463,7 +463,10 @@ export function AdminPage() {
             <div className="admin-hole-row" key={hole.id}>
               <span>
                 <strong>{hole.hole_number}</strong>
-                <small>{hole.status.replace(/_/g, ' ')} · {hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
+                <span className="admin-hole-meta">
+                  <StatusPill meta={holeStatusMeta(hole.status)} />
+                  <small>{hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
+                </span>
               </span>
               <button
                 type="button"
@@ -516,13 +519,6 @@ export function AdminPage() {
       )}
     </div>
   );
-}
-
-function adminOrderStatus(status: string): string {
-  if (status === 'available' || status === 'assigned') return 'Pending pickup';
-  if (status === 'picking_in_progress') return 'In progress';
-  if (status === 'picked') return 'Picked up';
-  return status.replace(/_/g, ' ');
 }
 
 function OrderQrPreview({ orderRef, qrCodeId }: { orderRef: string; qrCodeId: string }) {

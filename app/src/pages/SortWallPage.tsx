@@ -3,29 +3,22 @@ import { usePigeonHoles } from '../lib/usePigeonHoles';
 import { useOrders } from '../lib/useOrders';
 import { supabase } from '../lib/supabaseClient';
 import { WarehouseGateQr } from '../components/WarehouseGateQr';
+import { StatusPill } from '../components/StatusPill';
+import { orderStatusMeta, holeStatusMeta } from '../lib/status';
+import { useToast } from '../lib/useToast';
 import { useAuth } from '../auth/AuthContext';
-import type { PigeonHoleStatus, Warehouse } from '../types/database';
-
-const STATUS_LABEL: Record<PigeonHoleStatus, string> = {
-  free: 'Free',
-  reserved: 'Reserved',
-  partially_filled: 'Partially filled',
-  filled: 'Ready for pickup',
-  out_of_service: 'Out of service',
-};
+import type { Warehouse } from '../types/database';
 
 export function SortWallPage() {
   const { profile } = useAuth();
   const { holes, sortWalls, refetch: refetchHoles } = usePigeonHoles();
   const { orders, refetch: refetchOrders } = useOrders();
   const [holeOrderIds, setHoleOrderIds] = useState<Map<string, string>>(new Map());
+  // Keyed by pigeon-hole id: while any action on a hole is in flight, BOTH the
+  // dispatch and out-of-service controls in that tile are disabled, so the same
+  // hole can never have two mutations running at once.
   const [busyHole, setBusyHole] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
-
-  const notify = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 4000);
-  };
+  const { toast, notify } = useToast(4000);
 
   const orderByHoleId = useMemo(() => {
     const map = new Map<string, typeof orders[number]>();
@@ -64,30 +57,33 @@ export function SortWallPage() {
     };
   }, [holes, orders]);
 
-  const dispatchOrder = async (orderId: string) => {
-    setBusyHole(orderId);
+  const dispatchOrder = async (orderId: string, holeId: string) => {
+    setBusyHole(holeId);
     const { error } = await supabase.rpc('mark_order_dispatched_v1', {
       p_order_id: orderId,
       p_reason: 'Delivery partner collected (manual, free MVP)',
     });
     setBusyHole(null);
-    if (error) notify(`Could not mark dispatched: ${error.message}`);
+    if (error) notify(`Could not mark dispatched: ${error.message}`, 'error');
     else {
-      notify('Order dispatched. Hole freed.');
+      notify('Order dispatched. Hole freed.', 'success');
       void refetchHoles();
       void refetchOrders();
     }
   };
 
   const toggleOutOfService = async (holeId: string, currentlyOut: boolean) => {
+    if (!currentlyOut && !window.confirm('Mark this pigeon hole out of service? It will stop receiving orders until restored.')) {
+      return;
+    }
     setBusyHole(holeId);
     const rpc = currentlyOut ? 'restore_pigeon_hole_v1' : 'mark_hole_out_of_service_v1';
     const args = currentlyOut ? { p_pigeon_hole_id: holeId } : { p_pigeon_hole_id: holeId, p_reason: 'Marked out of service by warehouse staff' };
     const { error } = await supabase.rpc(rpc, args);
     setBusyHole(null);
-    if (error) notify(`Action failed: ${error.message}`);
+    if (error) notify(`Action failed: ${error.message}`, 'error');
     else {
-      notify(currentlyOut ? 'Hole restored to free.' : 'Hole marked out of service.');
+      notify(currentlyOut ? 'Hole restored to free.' : 'Hole marked out of service.', 'success');
       void refetchHoles();
     }
   };
@@ -102,7 +98,7 @@ export function SortWallPage() {
 
   return (
     <div className="sort-wall-screen">
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
 
       <header className="panel-heading">
         <div>
@@ -117,19 +113,19 @@ export function SortWallPage() {
       )}
 
       <div className="wall-summary" aria-label="Sort wall capacity summary">
-        <div className="wall-summary-card">
+        <div className="wall-summary-card is-free">
           <strong>{freeCount}</strong>
           <span>Free holes</span>
         </div>
-        <div className="wall-summary-card">
+        <div className="wall-summary-card is-attention">
           <strong>{inUseCount}</strong>
           <span>Being filled</span>
         </div>
-        <div className="wall-summary-card">
+        <div className="wall-summary-card is-ready">
           <strong>{readyCount}</strong>
           <span>Ready for pickup</span>
         </div>
-        <div className="wall-summary-card">
+        <div className="wall-summary-card is-danger">
           <strong>{unavailableCount}</strong>
           <span>Out of service</span>
         </div>
@@ -140,8 +136,10 @@ export function SortWallPage() {
         {exceptionOrders.length === 0 && <p className="empty-state">No stuck orders. Nice.</p>}
         {exceptionOrders.map((o) => (
           <div key={o.id} className="order-card exception">
-            <strong>{o.external_order_ref}</strong>
-            <div>{o.status.replace(/_/g, ' ')}</div>
+            <div className="exception-row">
+              <strong>{o.external_order_ref}</strong>
+              <StatusPill meta={orderStatusMeta(o.status)} />
+            </div>
           </div>
         ))}
       </section>
@@ -157,7 +155,7 @@ export function SortWallPage() {
                 return (
                   <div key={hole.id} className={`pigeon-hole pigeon-hole-${hole.status}`}>
                     <div className="pigeon-hole-number">{hole.hole_number}</div>
-                    <div className="pigeon-hole-status">{STATUS_LABEL[hole.status]}</div>
+                    <StatusPill meta={holeStatusMeta(hole.status)} />
                     {order && (
                       <div className="pigeon-hole-order">
                         {order.external_order_ref}
@@ -166,17 +164,17 @@ export function SortWallPage() {
                       </div>
                     )}
                     {order && order.status === 'ready_for_dispatch' && (
-                      <button type="button" disabled={busyHole === order.id} onClick={() => dispatchOrder(order.id)}>
+                      <button type="button" disabled={busyHole === hole.id} onClick={() => dispatchOrder(order.id, hole.id)}>
                         Mark collected
                       </button>
                     )}
                     <button
                       type="button"
-                      className="link-button"
+                      className="secondary-button"
                       disabled={busyHole === hole.id}
                       onClick={() => toggleOutOfService(hole.id, hole.status === 'out_of_service')}
                     >
-                      {hole.status === 'out_of_service' ? 'Restore' : 'Mark out of service'}
+                      {hole.status === 'out_of_service' ? 'Restore hole' : 'Out of service'}
                     </button>
                   </div>
                 );

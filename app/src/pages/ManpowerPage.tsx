@@ -1,6 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { humanizePickerCreateError, validatePickerCreateInput } from '../lib/pickerAuth';
 import { supabase } from '../lib/supabaseClient';
+import { StatusPill } from '../components/StatusPill';
+import { pickerStatusMeta } from '../lib/status';
+import { useToast } from '../lib/useToast';
 
 interface PickerRosterRow {
   id: string;
@@ -27,15 +30,29 @@ interface CreatedPicker {
 export function ManpowerPage() {
   const [pickers, setPickers] = useState<PickerRosterRow[]>([]);
   const [zones, setZones] = useState<{ code: string; label: string }[]>([]);
-  const [toast, setToast] = useState<string | null>(null);
+  const { toast, notify } = useToast(6000);
   const [formError, setFormError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedPicker | null>(null);
   const [allZones, setAllZones] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const notify = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 6000);
+  // Let the one-time credentials dialog close on Escape.
+  useEffect(() => {
+    if (!created) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCreated(null);
+    };
+    document.addEventListener('keydown', onEsc);
+    return () => document.removeEventListener('keydown', onEsc);
+  }, [created]);
+
+  const copyField = async (label: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      notify(`${label} copied.`, 'success');
+    } catch {
+      notify(`Could not copy ${label}.`, 'error');
+    }
   };
 
   const load = async () => {
@@ -43,11 +60,14 @@ export function ManpowerPage() {
       supabase.rpc('admin_list_pickers_v1'),
       supabase.from('zones').select('code, label').eq('is_active', true).order('sort_order'),
     ]);
-    if (roster.error) notify(`Could not load picker roster: ${humanizePickerCreateError(roster.error.message)}`);
+    if (roster.error) notify(`Could not load picker roster: ${humanizePickerCreateError(roster.error.message)}`, 'error');
     else setPickers((roster.data as PickerRosterRow[] | null) ?? []);
     setZones((zoneRows.data as { code: string; label: string }[] | null) ?? []);
   };
 
+  // Load once on mount. `load` is a stable per-render closure over supabase
+  // only; re-running on its identity would just refetch needlessly.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     void load();
   }, []);
@@ -91,7 +111,7 @@ export function ManpowerPage() {
     if (error) {
       const message = humanizePickerCreateError(error.message);
       setFormError(message);
-      notify(`Could not create picker: ${message}`);
+      notify(`Could not create picker: ${message}`, 'error');
       return;
     }
 
@@ -101,7 +121,20 @@ export function ManpowerPage() {
     void load();
   };
 
+  const STATUS_DONE: Record<'active' | 'suspended' | 'offboarded', string> = {
+    active: 'Picker reactivated.',
+    suspended: 'Picker suspended.',
+    offboarded: 'Picker offboarded.',
+  };
+
   const updatePicker = async (picker: PickerRosterRow, status: 'active' | 'suspended' | 'offboarded') => {
+    // Guard destructive transitions behind a confirm. Offboarding is terminal.
+    if (status === 'suspended' && !window.confirm(`Suspend ${picker.full_name ?? 'this picker'}? They will be signed out and stop receiving orders until reactivated.`)) {
+      return;
+    }
+    if (status === 'offboarded' && !window.confirm(`Offboard ${picker.full_name ?? 'this picker'}? This is permanent - they cannot be reactivated from here.`)) {
+      return;
+    }
     const { error } = await supabase.rpc('admin_update_picker_profile_v1', {
       p_picker_id: picker.id,
       p_full_name: picker.full_name ?? '',
@@ -109,16 +142,16 @@ export function ManpowerPage() {
       p_all_zones: picker.all_zones,
       p_status: status,
     });
-    if (error) notify(`Could not update picker: ${humanizePickerCreateError(error.message)}`);
+    if (error) notify(`Could not update picker: ${humanizePickerCreateError(error.message)}`, 'error');
     else {
-      notify(status === 'active' ? 'Picker reactivated.' : 'Picker suspended.');
+      notify(STATUS_DONE[status], 'success');
       void load();
     }
   };
 
   return (
     <div className="admin-screen manpower-screen">
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
       <header className="panel-heading">
         <div>
           <span className="panel-eyebrow">Operations roster</span>
@@ -180,12 +213,33 @@ export function ManpowerPage() {
               <small>{picker.phone_masked ?? 'Mobile hidden'} · {picker.all_zones ? 'All Zones' : picker.home_zone ?? 'No zone'}</small>
             </div>
             <div>
-              <span className={`state-pill ${picker.status === 'active' ? 'state-ready' : 'state-progress'}`}>{picker.status}</span>
-              <small>{picker.is_online ? '● Online' : '○ Offline'} · {picker.active_orders} active</small>
+              <StatusPill meta={pickerStatusMeta(picker.status)} />
+              <small>
+                <span className={`roster-online ${picker.is_online ? 'is-online' : ''}`}>
+                  {picker.is_online ? '● Online' : '○ Offline'}
+                </span>
+                {' · '}{picker.active_orders} active
+              </small>
             </div>
-            <button type="button" onClick={() => void updatePicker(picker, picker.status === 'active' ? 'suspended' : 'active')}>
-              {picker.status === 'active' ? 'Suspend' : 'Reactivate'}
-            </button>
+            <div className="manpower-actions">
+              {picker.status === 'active' && (
+                <button type="button" className="secondary-button" onClick={() => void updatePicker(picker, 'suspended')}>
+                  Suspend
+                </button>
+              )}
+              {picker.status === 'suspended' && (
+                <button type="button" onClick={() => void updatePicker(picker, 'active')}>
+                  Reactivate
+                </button>
+              )}
+              {picker.status !== 'offboarded' ? (
+                <button type="button" className="danger-button" onClick={() => void updatePicker(picker, 'offboarded')}>
+                  Offboard
+                </button>
+              ) : (
+                <span className="roster-terminal">Offboarded</span>
+              )}
+            </div>
           </div>
         ))}
       </section>
@@ -194,11 +248,29 @@ export function ManpowerPage() {
         <div className="qr-dialog-backdrop" role="presentation">
           <section className="qr-dialog manpower-created" role="dialog" aria-modal="true">
             <h2>Picker created</h2>
-            <p>Give these credentials to the picker now. The picker ID is intentionally only revealed here.</p>
-            <strong>Picker ID: {created.picker_code}</strong>
-            <strong>Mobile: {created.phone_e164}</strong>
-            <strong>Login code: {created.login_code}</strong>
-            <button type="button" onClick={() => setCreated(null)}>I have copied these credentials</button>
+            <p>Give these credentials to the picker now. The picker ID and login code are only shown here, once.</p>
+            <ul className="cred-list">
+              <li>
+                <span><small>Picker ID</small><strong>{created.picker_code}</strong></span>
+                <button type="button" className="secondary-button" onClick={() => void copyField('Picker ID', created.picker_code)}>Copy</button>
+              </li>
+              <li>
+                <span><small>Mobile</small><strong>{created.phone_e164}</strong></span>
+                <button type="button" className="secondary-button" onClick={() => void copyField('Mobile', created.phone_e164)}>Copy</button>
+              </li>
+              <li>
+                <span><small>Login code</small><strong>{created.login_code}</strong></span>
+                <button type="button" className="secondary-button" onClick={() => void copyField('Login code', created.login_code)}>Copy</button>
+              </li>
+            </ul>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void copyField('All credentials', `Picker ID: ${created.picker_code}\nMobile: ${created.phone_e164}\nLogin code: ${created.login_code}`)}
+            >
+              Copy all
+            </button>
+            <button type="button" onClick={() => setCreated(null)}>I have saved these credentials</button>
           </section>
         </div>
       )}
