@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { humanizePickerCreateError, validatePickerCreateInput } from '../lib/pickerAuth';
 import { supabase } from '../lib/supabaseClient';
 
 interface PickerRosterRow {
@@ -27,12 +28,14 @@ export function ManpowerPage() {
   const [pickers, setPickers] = useState<PickerRosterRow[]>([]);
   const [zones, setZones] = useState<{ code: string; label: string }[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedPicker | null>(null);
   const [allZones, setAllZones] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const notify = (message: string) => {
     setToast(message);
-    window.setTimeout(() => setToast(null), 5000);
+    window.setTimeout(() => setToast(null), 6000);
   };
 
   const load = async () => {
@@ -40,7 +43,7 @@ export function ManpowerPage() {
       supabase.rpc('admin_list_pickers_v1'),
       supabase.from('zones').select('code, label').eq('is_active', true).order('sort_order'),
     ]);
-    if (roster.error) notify(`Could not load picker roster: ${roster.error.message}`);
+    if (roster.error) notify(`Could not load picker roster: ${humanizePickerCreateError(roster.error.message)}`);
     else setPickers((roster.data as PickerRosterRow[] | null) ?? []);
     setZones((zoneRows.data as { code: string; label: string }[] | null) ?? []);
   };
@@ -51,27 +54,49 @@ export function ManpowerPage() {
 
   const createPicker = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const fullName = String(new FormData(form).get('name') ?? '');
+    const phone = String(new FormData(form).get('phone') ?? '');
+    const loginCode = String(new FormData(form).get('loginCode') ?? '');
+    const zone = String(new FormData(form).get('zone') ?? '');
+
+    const localError = validatePickerCreateInput({
+      fullName,
+      phone,
+      loginCode,
+      zone,
+      allZones,
+    });
+    if (localError) {
+      setFormError(localError);
+      return;
+    }
+
+    if (!allZones && zones.length > 0 && !zones.some((row) => row.code === zone.trim().toUpperCase())) {
+      setFormError(`Zone “${zone.trim()}” is not in the active zone list. Pick one of the suggested zones, or tick All Zones.`);
+      return;
+    }
+
+    setFormError(null);
+    setSubmitting(true);
     const { data, error } = await supabase.rpc('admin_create_picker_v1', {
-      p_full_name: String(form.get('name') ?? ''),
-      p_phone: String(form.get('phone') ?? ''),
-      p_login_code: String(form.get('loginCode') ?? ''),
-      p_zone: allZones ? null : String(form.get('zone') ?? ''),
+      p_full_name: fullName,
+      p_phone: phone,
+      p_login_code: loginCode,
+      p_zone: allZones ? null : zone,
       p_all_zones: allZones,
     });
+    setSubmitting(false);
+
     if (error) {
-      const message = error.message.includes('mobile already exists')
-        ? 'That mobile number is already assigned to a picker.'
-        : error.message.includes('invalid picker details')
-          ? 'Check the name, mobile number, login code (6–8 digits), and zone.'
-          : error.message.includes('admin_create_picker_v1')
-            ? 'Picker create is not installed yet. Run migration 0011_admin_create_picker.sql in the Supabase SQL editor, then try again.'
-            : error.message;
+      const message = humanizePickerCreateError(error.message);
+      setFormError(message);
       notify(`Could not create picker: ${message}`);
       return;
     }
+
     setCreated(data as CreatedPicker);
-    event.currentTarget.reset();
+    form.reset();
     setAllZones(false);
     void load();
   };
@@ -84,7 +109,7 @@ export function ManpowerPage() {
       p_all_zones: picker.all_zones,
       p_status: status,
     });
-    if (error) notify(`Could not update picker: ${error.message}`);
+    if (error) notify(`Could not update picker: ${humanizePickerCreateError(error.message)}`);
     else {
       notify(status === 'active' ? 'Picker reactivated.' : 'Picker suspended.');
       void load();
@@ -104,31 +129,43 @@ export function ManpowerPage() {
 
       <section>
         <h2>Add picker</h2>
-        <form onSubmit={createPicker}>
+        <form onSubmit={createPicker} noValidate>
           <label>
             Name
-            <input name="name" required minLength={2} />
+            <input name="name" required minLength={2} autoComplete="name" placeholder="Picker full name" />
           </label>
           <label>
             Mobile number
-            <input name="phone" inputMode="tel" placeholder="0501234567" required />
+            <input name="phone" inputMode="tel" placeholder="0501234567 or +971501234567" required />
+            <small className="field-hint">UAE local (05…) or full international with country code.</small>
           </label>
           <label>
             Login code
             <input name="loginCode" inputMode="numeric" pattern="[0-9]{6,8}" placeholder="6–8 digits" required />
+            <small className="field-hint">Digits only — this is the picker&apos;s password at login.</small>
           </label>
           <label>
             Zone
-            <input name="zone" list="zones" disabled={allZones} required={!allZones} placeholder="e.g. C" />
+            <input name="zone" list="zones" disabled={allZones} required={!allZones} placeholder={zones[0]?.code ?? 'e.g. C'} />
             <datalist id="zones">
               {zones.map((zone) => <option key={zone.code} value={zone.code}>{zone.label}</option>)}
             </datalist>
+            <small className="field-hint">
+              {allZones
+                ? 'All Zones selected — this picker can take orders from any zone.'
+                : zones.length > 0
+                  ? 'Pick a suggested zone code, or tick All Zones.'
+                  : 'No zones configured yet — type a zone code (e.g. C), or tick All Zones.'}
+            </small>
           </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={allZones} onChange={(event) => setAllZones(event.target.checked)} />
             All Zones
           </label>
-          <button type="submit">Create picker</button>
+          {formError && <p className="error-text" role="alert">{formError}</p>}
+          <button type="submit" disabled={submitting}>
+            {submitting ? 'Creating…' : 'Create picker'}
+          </button>
         </form>
       </section>
 

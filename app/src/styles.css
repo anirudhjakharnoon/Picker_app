@@ -242,6 +242,15 @@ section {
   font-weight: 600;
 }
 
+.field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
 /* --- App shell/navigation --- */
 .loading-screen {
   display: flex;
