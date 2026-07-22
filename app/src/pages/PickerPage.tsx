@@ -37,6 +37,26 @@ function formatTime(iso: string): string {
   }
 }
 
+type BagScanMode = 'all_bags' | 'one_bag';
+
+// Reads the operations-wide bag scan mode. operations_configuration is
+// admin-only via RLS, so pickers learn the mode through the SECURITY DEFINER
+// get_bag_scan_mode_v1 reader. Defaults to 'all_bags' if the RPC is missing
+// (migration 0014 not yet applied) so the picker flow keeps working.
+function useBagScanMode(): BagScanMode {
+  const [mode, setMode] = useState<BagScanMode>('all_bags');
+  useEffect(() => {
+    let active = true;
+    void supabase.rpc('get_bag_scan_mode_v1').then(({ data }) => {
+      if (active && (data === 'one_bag' || data === 'all_bags')) setMode(data);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return mode;
+}
+
 export function PickerPage() {
   const { profile, patchProfile, refreshProfile } = useAuth();
   const { orders, refetch } = useOrders();
@@ -621,6 +641,8 @@ function PickupFlow({
   toast: string | null;
   refetch: () => Promise<void>;
 }) {
+  const scanMode = useBagScanMode();
+  const oneBag = scanMode === 'one_bag';
   const expected = order?.bag_count_expected ?? 0;
   const serverScanned = order?.bag_count_scanned_pickup ?? 0;
   const [optimisticScanned, setOptimisticScanned] = useState(serverScanned);
@@ -691,10 +713,18 @@ function PickupFlow({
           <p className="scan-order">Picking Order {order.external_order_ref}</p>
           <p className="scan-order">From: {storeName}</p>
           <h2 className="scan-title">Scan QR code</h2>
-          <p className="scan-sub">Scan the QR code on the order bag</p>
-          <p className="scan-progress">
-            Collecting Bag {Math.min(scanned + 1, expected)}/{expected}
+          <p className="scan-sub">
+            {oneBag
+              ? 'Scan any one bag to confirm this whole shipment'
+              : 'Scan the QR code on the order bag'}
           </p>
+          {oneBag ? (
+            <p className="scan-progress">One scan confirms all {expected} bags</p>
+          ) : (
+            <p className="scan-progress">
+              Collecting Bag {Math.min(scanned + 1, expected)}/{expected}
+            </p>
+          )}
           <p className="scan-counts">
             <strong>{scanned}</strong> picked up · <strong>{pending}</strong> pending
           </p>
@@ -917,6 +947,8 @@ function DropIntoHoleFlow({
   notify: (msg: string) => void;
   toast: string | null;
 }) {
+  const scanMode = useBagScanMode();
+  const oneBag = scanMode === 'one_bag';
   const [phase, setPhase] = useState<HoleDropPhase>('verify-hole');
   const [paused, setPaused] = useState(false);
   const [holeQrValue, setHoleQrValue] = useState<string | null>(null);
@@ -1054,7 +1086,11 @@ function DropIntoHoleFlow({
             <CheckIcon />
           </div>
           <h2>Pigeon hole {holeNumber} complete</h2>
-          <p className="sheet-sub">The next pigeon hole is now unlocked.</p>
+          <p className="sheet-sub">
+            {oneBag
+              ? 'Shipment sorted and ready for dispatch.'
+              : 'The next pigeon hole is now unlocked.'}
+          </p>
           <BagsGrid total={expected} collected={expected} />
         </div>
       </FullscreenSheet>
@@ -1067,12 +1103,18 @@ function DropIntoHoleFlow({
       <div className="scan-heading fade-in">
         <p className="scan-order">Head to pigeon hole: {holeNumber}</p>
         <h2 className="scan-title">
-          {phase === 'verify-hole' ? `Scan hole ${holeNumber}` : `Scan bag ${dropped + 1}/${expected}`}
+          {phase === 'verify-hole'
+            ? `Scan hole ${holeNumber}`
+            : oneBag
+              ? 'Scan one bag to finish'
+              : `Scan bag ${dropped + 1}/${expected}`}
         </h2>
         <p className="scan-sub">
           {phase === 'verify-hole'
             ? 'First scan the pigeon hole QR to confirm you are at the right location.'
-            : 'Scan only bags allocated to this hole.'}
+            : oneBag
+              ? 'Scanning any one bag here confirms the whole shipment.'
+              : 'Scan only bags allocated to this hole.'}
         </p>
         {phase === 'scan-bag' && (
           <p className="scan-counts">

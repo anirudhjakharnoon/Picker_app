@@ -213,7 +213,14 @@ export function AdminPage() {
       notify(`Order capacity saved, but assignment settings failed: ${assignmentError.message}`);
       return;
     }
-    setConfiguration(data as OperationsConfiguration);
+    const { data: scanModeData, error: scanModeError } = await supabase.rpc('admin_set_bag_scan_mode_v1', {
+      p_bag_scan_mode: form.get('bagScanMode') === 'one_bag' ? 'one_bag' : 'all_bags',
+    });
+    if (scanModeError) {
+      notify(`Capacity saved, but bag scan mode failed: ${scanModeError.message}`);
+      return;
+    }
+    setConfiguration((scanModeData as OperationsConfiguration) ?? (data as OperationsConfiguration));
     notify('Operations configuration saved. It applies to all pickers and free pigeon holes.');
     void loadRefData();
   };
@@ -382,6 +389,18 @@ export function AdminPage() {
             Maximum bags per pigeon hole
             <input name="bagsPerHole" type="number" min="1" required defaultValue={configuration?.bags_per_pigeon_hole ?? 5} />
           </label>
+          <label>
+            Bags scanned per shipment
+            <select name="bagScanMode" defaultValue={configuration?.bag_scan_mode ?? 'all_bags'}>
+              <option value="all_bags">Scan every bag (pickup and drop-off)</option>
+              <option value="one_bag">Scan one bag per shipment</option>
+            </select>
+          </label>
+          <p className="hint">
+            &quot;Scan one bag per shipment&quot; lets a picker confirm a whole shipment with a single
+            scan at pickup and a single scan at the pigeon hole. &quot;Scan every bag&quot; keeps the
+            current bag-by-bag flow. Applies to all shipments.
+          </p>
           <label className="checkbox-row">
             <input name="autoAssign" type="checkbox" defaultChecked={configuration?.auto_assign_enabled ?? true} />
             Automatically assign orders to eligible online pickers
