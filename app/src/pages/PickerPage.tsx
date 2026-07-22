@@ -38,20 +38,13 @@ function formatTime(iso: string): string {
 }
 
 export function PickerPage() {
-  const { profile } = useAuth();
+  const { profile, patchProfile, refreshProfile } = useAuth();
   const { orders, refetch } = useOrders();
   const storeNames = useStoreNames();
   const [screen, setScreen] = useState<Screen>({ name: 'queue' });
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
   const [toast, setToast] = useState<string | null>(null);
-
-  // Picker login means available for automatic zone assignment. This is a
-  // presence heartbeat, not an offline-mode toggle (the app is online-only).
-  useEffect(() => {
-    if (profile?.role === 'picker' && !profile.is_online) {
-      void supabase.rpc('set_picker_status_v1', { p_is_online: true });
-    }
-  }, [profile?.id, profile?.is_online, profile?.role]);
+  const [onlineToggleBusy, setOnlineToggleBusy] = useState(false);
 
   // The handoff bar is `position: fixed`, so the scrollable content behind
   // it needs bottom padding reserved for exactly its rendered height — a
@@ -129,6 +122,30 @@ export function PickerPage() {
     window.setTimeout(() => setToast(null), 4000);
   };
 
+  const toggleOnline = async () => {
+    const goingOnline = !profile?.is_online;
+    if (!goingOnline && inProgress.length > 0) {
+      notify('Finish your in-progress order before going offline.');
+      return;
+    }
+    if (!goingOnline && pickedUp.length > 0) {
+      notify(`Drop off ${pickedUp.length} picked-up order(s) before going offline.`);
+      return;
+    }
+
+    setOnlineToggleBusy(true);
+    patchProfile({ is_online: goingOnline });
+    const { error } = await supabase.rpc('set_picker_status_v1', { p_is_online: goingOnline });
+    setOnlineToggleBusy(false);
+    if (error) {
+      patchProfile({ is_online: !goingOnline });
+      notify(`Could not update status: ${error.message}`);
+      return;
+    }
+    notify(goingOnline ? 'You are now online' : 'You are now offline');
+    void refreshProfile();
+  };
+
   useEffect(() => {
     if (inProgress.length > 0) setActiveTab('in_progress');
   }, [inProgress.length]);
@@ -169,13 +186,25 @@ export function PickerPage() {
         ref={screenRef}
         style={handoffBarHeight ? { paddingBottom: handoffBarHeight + 24 } : undefined}
       >
-        <header className="picker-topbar">
-          <h1 className="picker-title">Pending Pickup</h1>
-        </header>
+        <PickerHeader
+          profile={profile}
+          busy={onlineToggleBusy}
+          onToggleOnline={() => void toggleOnline()}
+        />
 
         {toast && <div className="toast">{toast}</div>}
 
-        <>
+        {!profile?.is_online ? (
+          <div className="empty-state">
+            You&apos;re offline. Go online to receive new orders.
+            {myOrders.length > 0
+              ? ' Finish any assigned work below, then stay online to keep receiving assignments.'
+              : ''}
+          </div>
+        ) : null}
+
+        {(profile?.is_online || myOrders.length > 0) && (
+          <>
             <div className="filter-chips" role="tablist" aria-label="Order filters">
               <FilterChip
                 label={`Pending${pendingPickup.length ? ` (${pendingPickup.length})` : ''}`}
@@ -228,7 +257,8 @@ export function PickerPage() {
               spot={HANDOVER_SPOT}
               onGoToHandoff={() => setScreen({ name: 'dropoff' })}
             />
-        </>
+          </>
+        )}
       </div>
     );
   }
@@ -383,6 +413,35 @@ function emptyStateFor(tab: QueueTab): string {
 // Shared presentational pieces
 // ---------------------------------------------------------------------------
 
+function PickerHeader({
+  profile,
+  busy,
+  onToggleOnline,
+}: {
+  profile: ReturnType<typeof useAuth>['profile'];
+  busy: boolean;
+  onToggleOnline: () => void;
+}) {
+  const online = profile?.is_online ?? false;
+  return (
+    <header className="picker-topbar">
+      <h1 className="picker-title">Pending Pickup</h1>
+      <button
+        type="button"
+        className={`online-toggle ${online ? 'is-online' : ''}`}
+        onClick={onToggleOnline}
+        disabled={busy}
+        aria-pressed={online}
+        aria-label={online ? 'Go offline' : 'Go online'}
+      >
+        {busy && <span className="button-spinner" aria-hidden="true" />}
+        {online ? 'Online' : 'Offline'}
+        <span className="online-dot">{online ? <CheckIcon /> : null}</span>
+      </button>
+    </header>
+  );
+}
+
 function FilterChip({
   label,
   active,
@@ -507,7 +566,7 @@ function HandoffBar({
       </div>
       <OrderAcceptSwipe
         disabled={!canHandoff}
-        disabledMessage="Finish all in-progress orders before handoff."
+        disabledMessage="Finish in-progress orders before handoff"
         label="Swipe right to Go to handoff"
         busyLabel="Opening handoff…"
         onAccepted={onGoToHandoff}

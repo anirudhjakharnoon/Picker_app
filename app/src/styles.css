@@ -242,6 +242,15 @@ section {
   font-weight: 600;
 }
 
+.field-hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
 /* --- App shell/navigation --- */
 .loading-screen {
   display: flex;
@@ -1406,6 +1415,7 @@ section {
 .order-accept-swipe.is-disabled {
   color: var(--color-text-disabled);
   cursor: not-allowed;
+  min-height: 64px;
 }
 
 .order-accept-fill {
@@ -1423,8 +1433,17 @@ section {
 .order-accept-label {
   position: relative;
   z-index: 1;
+  max-width: 100%;
+  padding: 0.35rem 3.4rem;
   font-size: 0.95rem;
   font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.order-accept-swipe.is-disabled .order-accept-label {
+  padding: 0.45rem 0.85rem;
+  font-size: 0.88rem;
 }
 
 .order-accept-fill:not([style*="scaleX(0)"]) + .order-accept-label {
@@ -1455,7 +1474,7 @@ section {
 }
 
 .order-accept-swipe.is-disabled .order-accept-thumb {
-  background: var(--color-text-disabled);
+  display: none;
 }
 
 .order-mini {
