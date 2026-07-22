@@ -202,6 +202,14 @@ export function AdminPage() {
       notify(`Could not save configuration: ${error.message}`);
       return;
     }
+    const { error: assignmentError } = await supabase.rpc('admin_update_assignment_configuration_v1', {
+      p_auto_assign_enabled: form.get('autoAssign') === 'on',
+      p_null_zone_matches_all_pickers: form.get('nullZoneAll') === 'on',
+    });
+    if (assignmentError) {
+      notify(`Order capacity saved, but assignment settings failed: ${assignmentError.message}`);
+      return;
+    }
     setConfiguration(data as OperationsConfiguration);
     notify('Operations configuration saved. It applies to all pickers and free pigeon holes.');
     void loadRefData();
@@ -370,6 +378,14 @@ export function AdminPage() {
           <label>
             Maximum bags per pigeon hole
             <input name="bagsPerHole" type="number" min="1" required defaultValue={configuration?.bags_per_pigeon_hole ?? 5} />
+          </label>
+          <label className="checkbox-row">
+            <input name="autoAssign" type="checkbox" defaultChecked={configuration?.auto_assign_enabled ?? true} />
+            Automatically assign orders to eligible online pickers
+          </label>
+          <label className="checkbox-row">
+            <input name="nullZoneAll" type="checkbox" defaultChecked={configuration?.null_zone_matches_all_pickers ?? false} />
+            Treat orders without a zone as eligible for all pickers
           </label>
           <button type="submit">Save configuration</button>
         </form>

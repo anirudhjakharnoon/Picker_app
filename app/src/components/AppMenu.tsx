@@ -8,6 +8,7 @@ const TAB_LABELS: Record<string, string> = {
   '/picker': 'Picker',
   '/sort-wall': 'Sort Wall',
   '/admin': 'Admin',
+  '/manpower': 'Manpower',
 };
 
 /**
