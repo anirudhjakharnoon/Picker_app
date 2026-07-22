@@ -12,7 +12,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource/figtree": "^5.3.0",
     "@supabase/supabase-js": "^2.110.7",
     "qr-scanner": "^1.4.2",
     "qrcode": "^1.5.4",

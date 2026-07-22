@@ -78,7 +78,8 @@ function hexToRgb(hex) {
 
 const outDir = process.argv[2] ?? join(process.cwd(), 'public');
 for (const size of [192, 512]) {
-  const png = makePng(size, '#111827', '#22c55e');
+  // Dubai Mall Online: Neutral Black field with a Silver inner mark.
+  const png = makePng(size, '#222223', '#E3E3E3');
   writeFileSync(join(outDir, `pwa-${size}.png`), png);
   console.log(`Wrote pwa-${size}.png`);
 }
