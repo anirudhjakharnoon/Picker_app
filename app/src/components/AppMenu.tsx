@@ -50,6 +50,7 @@ export function AppMenu({ tabs, role }: { tabs: string[]; role: UserRole }) {
         type="button"
         className="icon-button app-menu-trigger"
         aria-label="Open menu"
+        aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >

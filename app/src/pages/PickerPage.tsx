@@ -10,6 +10,9 @@ import { FullscreenSheet } from '../components/FullscreenSheet';
 import { CheckIcon, PinIcon } from '../components/icons';
 import type { Order } from '../types/database';
 import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
+import { StatusPill } from '../components/StatusPill';
+import { orderStatusMeta } from '../lib/status';
+import { useToast, type Toast, type ToastVariant } from '../lib/useToast';
 
 type Screen =
   | { name: 'queue' }
@@ -63,7 +66,7 @@ export function PickerPage() {
   const storeNames = useStoreNames();
   const [screen, setScreen] = useState<Screen>({ name: 'queue' });
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
-  const [toast, setToast] = useState<string | null>(null);
+  const { toast, notify } = useToast(4000);
   const [onlineToggleBusy, setOnlineToggleBusy] = useState(false);
 
   // The handoff bar is `position: fixed`, so the scrollable content behind
@@ -137,19 +140,15 @@ export function PickerPage() {
     [myOrders]
   );
   const canHandoff = pickedUp.length > 0 && myUnfinishedCount === 0;
-  const notify = (msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 4000);
-  };
 
   const toggleOnline = async () => {
     const goingOnline = !profile?.is_online;
     if (!goingOnline && inProgress.length > 0) {
-      notify('Finish your in-progress order before going offline.');
+      notify('Finish your in-progress order before going offline.', 'error');
       return;
     }
     if (!goingOnline && pickedUp.length > 0) {
-      notify(`Drop off ${pickedUp.length} picked-up order(s) before going offline.`);
+      notify(`Drop off ${pickedUp.length} picked-up order(s) before going offline.`, 'error');
       return;
     }
 
@@ -159,21 +158,26 @@ export function PickerPage() {
     setOnlineToggleBusy(false);
     if (error) {
       patchProfile({ is_online: !goingOnline });
-      notify(`Could not update status: ${error.message}`);
+      notify(`Could not update status: ${error.message}`, 'error');
       return;
     }
-    notify(goingOnline ? 'You are now online' : 'You are now offline');
+    notify(goingOnline ? 'You are now online' : 'You are now offline', 'success');
     void refreshProfile();
   };
 
+  // Auto-focus the In progress tab only when work FIRST appears (a rising
+  // edge), not on every render where work exists - otherwise a picker who taps
+  // another tab is yanked back to In progress on the next data refresh.
+  const hadInProgress = useRef(false);
   useEffect(() => {
-    if (inProgress.length > 0) setActiveTab('in_progress');
+    if (inProgress.length > 0 && !hadInProgress.current) setActiveTab('in_progress');
+    hadInProgress.current = inProgress.length > 0;
   }, [inProgress.length]);
 
   const acceptOrder = async (order: Order) => {
     const result = await submitAction('accept_order', () => ({ p_order_id: order.id }));
     if (!result.ok) {
-      notify(`Could not accept this order: ${result.error}`);
+      notify(`Could not accept this order: ${result.error}`, 'error');
       return;
     }
     await refetch();
@@ -184,7 +188,7 @@ export function PickerPage() {
   const goToStore = async (order: Order) => {
     const { error } = await supabase.rpc('picker_go_to_store_v1', { p_order_id: order.id });
     if (error) {
-      notify(`Cannot start this store: ${error.message}`);
+      notify(`Cannot start this store: ${error.message}`, 'error');
       return;
     }
     await refetch();
@@ -212,14 +216,15 @@ export function PickerPage() {
           onToggleOnline={() => void toggleOnline()}
         />
 
-        {toast && <div className="toast">{toast}</div>}
+        {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
 
         {!profile?.is_online ? (
-          <div className="empty-state">
-            You&apos;re offline. Go online to receive new orders.
-            {myOrders.length > 0
-              ? ' Finish any assigned work below, then stay online to keep receiving assignments.'
-              : ''}
+          <div className="offline-banner" role="status">
+            <span aria-hidden="true">●</span>
+            <span>
+              Offline - not receiving new orders.
+              {myOrders.length > 0 ? ' Finish any assigned work below, then go online again.' : ' Go online to start receiving orders.'}
+            </span>
           </div>
         ) : null}
 
@@ -294,7 +299,7 @@ export function PickerPage() {
         <article className="order-card">
           <div className="order-card-head">
             <span className="order-number">{order.external_order_ref}</span>
-            <span className="state-pill state-progress">In progress</span>
+            <StatusPill meta={orderStatusMeta(order.status)} />
           </div>
           <div className="order-card-body">
             <p className="order-line">Pickup from: <strong>{storeNameFor(order)}</strong></p>
@@ -500,16 +505,11 @@ function OrderCard({
   onContinue: () => void;
 }) {
   const inProgress = order.status === 'picking_in_progress';
-  const pickedUp = order.status === 'picked';
   return (
-    <article className="order-card">
+    <article className={`order-card${order.is_fragile ? ' is-fragile' : ''}`}>
       <div className="order-card-head">
         <span className="order-number">{order.external_order_ref}</span>
-        <span
-          className={`state-pill ${pickedUp ? 'state-picked' : inProgress ? 'state-progress' : 'state-ready'}`}
-        >
-          {pickedUp ? 'Picked up' : inProgress ? 'In progress' : 'Ready'}
-        </span>
+        <StatusPill meta={orderStatusMeta(order.status)} />
         <span className="order-time">{formatTime(order.ingested_at)}</span>
       </div>
 
@@ -637,8 +637,8 @@ function PickupFlow({
   order: Order | undefined;
   storeName: string;
   onClose: () => void;
-  notify: (msg: string) => void;
-  toast: string | null;
+  notify: (msg: string, variant?: ToastVariant) => void;
+  toast: Toast | null;
   refetch: () => Promise<void>;
 }) {
   const scanMode = useBagScanMode();
@@ -686,7 +686,7 @@ function PickupFlow({
       }));
       if (!result.ok) {
         setOptimisticScanned(serverScanned); // revert the optimistic bump
-        notify(`Scan rejected: ${result.error || 'unknown error, please try again'}`);
+        notify(`Scan rejected: ${result.error || 'unknown error, please try again'}`, 'error');
         return;
       }
 
@@ -697,7 +697,7 @@ function PickupFlow({
       void refetch();
     } catch (err) {
       setOptimisticScanned(serverScanned);
-      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.');
+      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.', 'error');
     } finally {
       // Every exit path above already leaves `phase` unchanged on failure,
       // so re-enabling the scanner here is always correct — this is what
@@ -807,8 +807,8 @@ function GateScanScreen({
   orderIds: string[];
   onClose: () => void;
   onDone: () => Promise<void>;
-  notify: (msg: string) => void;
-  toast: string | null;
+  notify: (msg: string, variant?: ToastVariant) => void;
+  toast: Toast | null;
 }) {
   const [paused, setPaused] = useState(false);
   const [result, setResult] = useState<WarehouseArrivalRow[] | null>(null);
@@ -817,9 +817,9 @@ function GateScanScreen({
     setResult(rows);
     const overflow = rows.filter((row) => !row.reserved);
     if (overflow.length > 0) {
-      notify(`${overflow.length} order(s) have no free hole yet — hold those bags for staging.`);
+      notify(`${overflow.length} order(s) have no free hole yet — hold those bags for staging.`, 'error');
     } else {
-      notify('Pigeon holes assigned. Continue to sorting.');
+      notify('Pigeon holes assigned. Continue to sorting.', 'success');
     }
     window.setTimeout(() => {
       void onDone();
@@ -840,11 +840,11 @@ function GateScanScreen({
       if (result.ok) {
         completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
       } else {
-        notify(`Could not record arrival: ${result.error || 'unknown error, please try again'}`);
+        notify(`Could not record arrival: ${result.error || 'unknown error, please try again'}`, 'error');
         setPaused(false);
       }
     } catch (err) {
-      notify(err instanceof Error ? `Could not record arrival: ${err.message}` : 'Could not record arrival. Please try again.');
+      notify(err instanceof Error ? `Could not record arrival: ${err.message}` : 'Could not record arrival. Please try again.', 'error');
       setPaused(false);
     }
   };
@@ -944,8 +944,8 @@ function DropIntoHoleFlow({
   holeId: string;
   holeNumber: string;
   onDone: () => Promise<void>;
-  notify: (msg: string) => void;
-  toast: string | null;
+  notify: (msg: string, variant?: ToastVariant) => void;
+  toast: Toast | null;
 }) {
   const scanMode = useBagScanMode();
   const oneBag = scanMode === 'one_bag';
@@ -971,16 +971,16 @@ function DropIntoHoleFlow({
         p_pigeon_hole_qr_value: value,
       });
       if (error) {
-        notify(error.message || 'Could not verify this pigeon hole. Please try again.');
+        notify(error.message || 'Could not verify this pigeon hole. Please try again.', 'error');
         return;
       }
       const step = data as { hole_id?: string; hole_number?: string; dropped?: number; expected?: number } | null;
       if (!step || typeof step.hole_id !== 'string') {
-        notify('Unexpected response verifying the pigeon hole. Please try again.');
+        notify('Unexpected response verifying the pigeon hole. Please try again.', 'error');
         return;
       }
       if (step.hole_id !== holeId) {
-        notify('Wrong pigeon hole. Scan the currently unlocked hole for this order.');
+        notify('Wrong pigeon hole. Scan the currently unlocked hole for this order.', 'error');
         return;
       }
       setHoleQrValue(value);
@@ -988,7 +988,7 @@ function DropIntoHoleFlow({
       setExpected(step.expected ?? 0);
       setPhase('hole-arrived');
     } catch (err) {
-      notify(err instanceof Error ? `Could not verify hole: ${err.message}` : 'Could not verify hole. Please try again.');
+      notify(err instanceof Error ? `Could not verify hole: ${err.message}` : 'Could not verify hole. Please try again.', 'error');
     } finally {
       setPaused(false);
     }
@@ -997,7 +997,7 @@ function DropIntoHoleFlow({
   const scanBag = async (value: string) => {
     if (paused) return;
     if (!holeQrValue) {
-      notify('Hole not verified yet — please scan the pigeon hole again.');
+      notify('Hole not verified yet — please scan the pigeon hole again.', 'error');
       return;
     }
     setPaused(true);
@@ -1014,7 +1014,8 @@ function DropIntoHoleFlow({
         notify(
           result.error === 'Wrong bag, bag does not belong to the hole'
             ? 'Wrong bag, bag does not belong to the hole'
-            : `Scan rejected: ${result.error || 'unknown error, please try again'}`
+            : `Scan rejected: ${result.error || 'unknown error, please try again'}`,
+          'error',
         );
         return;
       }
@@ -1022,7 +1023,7 @@ function DropIntoHoleFlow({
         | { dropped?: number; expected?: number; hole_complete?: boolean }
         | undefined;
       if (!placement || typeof placement.dropped !== 'number' || typeof placement.expected !== 'number') {
-        notify('Unexpected response from the server. Please try scanning that bag again.');
+        notify('Unexpected response from the server. Please try scanning that bag again.', 'error');
         return;
       }
       setDropped(placement.dropped);
@@ -1032,7 +1033,7 @@ function DropIntoHoleFlow({
         window.setTimeout(() => void onDone(), 1100);
       }
     } catch (err) {
-      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.');
+      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.', 'error');
     } finally {
       setPaused(false);
     }
@@ -1050,7 +1051,7 @@ function DropIntoHoleFlow({
         </div>
         <div className="sheet-footer">
           <button type="button" className="dark-button" onClick={() => setPhase('scan-bag')}>
-            Scan Bags {dropped}/{expected}
+            {expected > 0 ? `Scan Bags ${dropped}/${expected}` : 'Scan Bags'}
           </button>
         </div>
       </FullscreenSheet>

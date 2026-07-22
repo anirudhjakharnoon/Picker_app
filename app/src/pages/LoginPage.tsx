@@ -30,9 +30,33 @@ export function LoginPage() {
         <p className="auth-subtitle">
           {mode === 'picker' ? 'Pickers sign in with the mobile number and login code issued in Manpower.' : 'Staff sign in with the email and password an admin created for you.'}
         </p>
-        <div className="login-mode-switch" role="tablist">
-          <button type="button" className={mode === 'picker' ? 'active' : ''} onClick={() => setMode('picker')}>Picker</button>
-          <button type="button" className={mode === 'staff' ? 'active' : ''} onClick={() => setMode('staff')}>Staff</button>
+        <div className="login-mode-switch" role="tablist" aria-label="Sign-in type">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'picker'}
+            className={mode === 'picker' ? 'active' : ''}
+            onClick={() => {
+              setMode('picker');
+              setPassword('');
+              setLocalError(null);
+            }}
+          >
+            Picker
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === 'staff'}
+            className={mode === 'staff' ? 'active' : ''}
+            onClick={() => {
+              setMode('staff');
+              setPassword('');
+              setLocalError(null);
+            }}
+          >
+            Staff
+          </button>
         </div>
         <form onSubmit={handleSubmit}>
           <label>
