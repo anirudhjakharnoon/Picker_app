@@ -147,6 +147,11 @@ export interface OperationsConfiguration {
   // many bags a picker scans per shipment ('all_bags' = every bag at pickup and
   // drop-off; 'one_bag' = a single scan confirms the whole shipment).
   bag_scan_mode?: 'all_bags' | 'one_bag';
+  // Optional: only present once migration 0015 has been applied. Controls how a
+  // shipment gets its pigeon hole ('pre_assigned' = reserved at arrival and the
+  // picker is routed to it; 'picker_chosen' = the picker scans any free hole at
+  // the wall and the first bag links it to the shipment).
+  hole_assignment_mode?: 'pre_assigned' | 'picker_chosen';
 }
 
 export interface Notification {

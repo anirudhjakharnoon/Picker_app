@@ -222,7 +222,19 @@ export function AdminPage() {
       notify(`Capacity saved, but bag scan mode failed: ${scanModeError.message}`, 'error');
       return;
     }
-    setConfiguration((scanModeData as OperationsConfiguration) ?? (data as OperationsConfiguration));
+    const { data: holeModeData, error: holeModeError } = await supabase.rpc('admin_set_hole_assignment_mode_v1', {
+      p_mode: form.get('holeAssignmentMode') === 'picker_chosen' ? 'picker_chosen' : 'pre_assigned',
+    });
+    if (holeModeError) {
+      await loadRefData();
+      notify(`Saved, but pigeon-hole assignment mode failed: ${holeModeError.message}`, 'error');
+      return;
+    }
+    setConfiguration(
+      (holeModeData as OperationsConfiguration) ??
+        (scanModeData as OperationsConfiguration) ??
+        (data as OperationsConfiguration),
+    );
     notify('Operations configuration saved. It applies to all pickers and free pigeon holes.', 'success');
     void loadRefData();
   };
@@ -402,6 +414,18 @@ export function AdminPage() {
             &quot;Scan one bag per shipment&quot; lets a picker confirm a whole shipment with a single
             scan at pickup and a single scan at the pigeon hole. &quot;Scan every bag&quot; keeps the
             current bag-by-bag flow. Applies to all shipments.
+          </p>
+          <label>
+            Pigeon-hole assignment
+            <select name="holeAssignmentMode" defaultValue={configuration?.hole_assignment_mode ?? 'pre_assigned'}>
+              <option value="pre_assigned">Pre-assigned (system routes the picker to a hole)</option>
+              <option value="picker_chosen">Picker-chosen (picker scans any free hole at the wall)</option>
+            </select>
+          </label>
+          <p className="hint">
+            &quot;Pre-assigned&quot; reserves a hole at warehouse arrival and shows the picker where to
+            go. &quot;Picker-chosen&quot; lets the picker scan any free hole; the first bag links that
+            hole to the shipment, and only that shipment&apos;s bags can go in it. Applies to all shipments.
           </p>
           <label className="checkbox-row">
             <input name="autoAssign" type="checkbox" defaultChecked={configuration?.auto_assign_enabled ?? true} />
