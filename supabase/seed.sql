@@ -25,12 +25,19 @@ returning id; -- copy this id for the next steps if running interactively
 -- Replace the warehouse id below with the one printed above if you're not
 -- running this as one uninterrupted script.
 with w as (select id from warehouses where name = 'Demo Warehouse' limit 1)
-insert into sort_walls (warehouse_id, name, rows, columns)
-select id, 'Wall A', 2, 4 from w
-returning id;
+insert into sort_walls (warehouse_id, name, delivery_mode, rows, columns)
+select id, 'LMS Wall', 'LMS', 2, 4 from w;
 
-with sw as (select id from sort_walls where name = 'Wall A' limit 1)
-select admin_create_pigeon_holes_v1(id, 8, 'P') from sw;
+with w as (select id from warehouses where name = 'Demo Warehouse' limit 1)
+insert into sort_walls (warehouse_id, name, delivery_mode, rows, columns)
+select id, 'HyperLocal Wall', 'Hyperlocal', 2, 4 from w;
+
+-- Distinct prefixes keep hole numbers unique across the two walls.
+with sw as (select id from sort_walls where name = 'LMS Wall' limit 1)
+select admin_create_pigeon_holes_v1(id, 8, 'LMS') from sw;
+
+with sw as (select id from sort_walls where name = 'HyperLocal Wall' limit 1)
+select admin_create_pigeon_holes_v1(id, 8, 'HL') from sw;
 -- NOTE: admin_create_pigeon_holes_v1 requires the CALLING role to be
 -- 'admin' (checked via auth.uid() -> profiles.role). If you're running this
 -- from the SQL editor as the postgres/service role directly, auth.uid()

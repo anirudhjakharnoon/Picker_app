@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useOrders } from '../lib/useOrders';
 import { QrCodePreview } from '../components/QrCodePreview';
 import { WarehouseGateQr } from '../components/WarehouseGateQr';
-import { EyeIcon } from '../components/icons';
+import { EyeIcon, TrashIcon } from '../components/icons';
 import { StatusPill } from '../components/StatusPill';
 import { orderStatusMeta, holeStatusMeta } from '../lib/status';
 import { useToast } from '../lib/useToast';
@@ -195,6 +195,28 @@ export function AdminPage() {
     }
     notify('Sort wall created.', 'success');
     formEl.reset();
+    void loadRefData();
+  };
+
+  const deleteHole = async (hole: PigeonHole) => {
+    if (!window.confirm(`Delete pigeon hole ${hole.hole_number}? This removes the hole and its QR code.`)) return;
+    const { error } = await supabase.rpc('admin_delete_pigeon_hole_v1', { p_pigeon_hole_id: hole.id });
+    if (error) {
+      notify(`Could not delete hole: ${error.message}`, 'error');
+      return;
+    }
+    notify(`Pigeon hole ${hole.hole_number} deleted.`, 'success');
+    void loadRefData();
+  };
+
+  const deleteWall = async (wall: SortWall) => {
+    if (!window.confirm(`Delete "${wall.name}" and all its pigeon holes? This cannot be undone.`)) return;
+    const { error } = await supabase.rpc('admin_delete_sort_wall_v1', { p_sort_wall_id: wall.id });
+    if (error) {
+      notify(`Could not delete wall: ${error.message}`, 'error');
+      return;
+    }
+    notify(`Sort wall "${wall.name}" deleted.`, 'success');
     void loadRefData();
   };
 
@@ -541,28 +563,64 @@ export function AdminPage() {
 
       <section className="admin-pigeon-holes">
         <h2>Pigeon-hole QR codes</h2>
-        <p className="hint">Tap the eye to view and scan the QR code for a specific pigeon hole.</p>
-        <div className="admin-hole-grid">
-          {holes.map((hole) => (
-            <div className="admin-hole-row" key={hole.id}>
-              <span>
-                <strong>{hole.hole_number}</strong>
-                <span className="admin-hole-meta">
-                  <StatusPill meta={holeStatusMeta(hole.status)} />
-                  <small>{hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
-                </span>
-              </span>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`Show QR code for pigeon hole ${hole.hole_number}`}
-                onClick={() => void viewHoleQr(hole)}
-              >
-                <EyeIcon />
-              </button>
+        <p className="hint">Holes are grouped by sort wall. Tap the eye to view a hole&apos;s QR code, or the bin to delete a hole. Delete a whole wall from its heading.</p>
+        {sortWalls.length === 0 && <p className="empty-state">No sort walls yet. Create one above.</p>}
+        {sortWalls.map((wall) => {
+          const wallHoles = holes.filter((h) => h.sort_wall_id === wall.id);
+          return (
+            <div className="admin-wall-group" key={wall.id}>
+              <div className="admin-wall-group-head">
+                <div className="wall-heading-row">
+                  <h3>{wall.name}</h3>
+                  {wall.delivery_mode && (
+                    <span className={`state-pill ${wall.delivery_mode === 'LMS' ? 'tone-info' : 'tone-attention'}`}>
+                      {wall.delivery_mode}
+                    </span>
+                  )}
+                  <small className="admin-wall-count">{wallHoles.length} hole(s)</small>
+                </div>
+                <button type="button" className="secondary-button" onClick={() => void deleteWall(wall)}>
+                  Delete wall
+                </button>
+              </div>
+              {wallHoles.length === 0 ? (
+                <p className="hint">No holes on this wall yet.</p>
+              ) : (
+                <div className="admin-hole-grid">
+                  {wallHoles.map((hole) => (
+                    <div className="admin-hole-row" key={hole.id}>
+                      <span>
+                        <strong>{hole.hole_number}</strong>
+                        <span className="admin-hole-meta">
+                          <StatusPill meta={holeStatusMeta(hole.status)} />
+                          <small>{hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
+                        </span>
+                      </span>
+                      <span className="admin-hole-actions">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Show QR code for pigeon hole ${hole.hole_number}`}
+                          onClick={() => void viewHoleQr(hole)}
+                        >
+                          <EyeIcon />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button icon-button-danger"
+                          aria-label={`Delete pigeon hole ${hole.hole_number}`}
+                          onClick={() => void deleteHole(hole)}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
+          );
+        })}
       </section>
 
       <section className="danger-zone">

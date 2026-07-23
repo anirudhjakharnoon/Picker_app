@@ -13,6 +13,7 @@ import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
 import { StatusPill } from '../components/StatusPill';
 import { orderStatusMeta } from '../lib/status';
 import { useToast, type Toast, type ToastVariant } from '../lib/useToast';
+import { friendlyScanError } from '../lib/scanErrors';
 
 type Screen =
   | { name: 'queue' }
@@ -742,7 +743,7 @@ function PickupFlow({
       }));
       if (!result.ok) {
         setOptimisticScanned(serverScanned); // revert the optimistic bump
-        notify(`Scan rejected: ${result.error || 'unknown error, please try again'}`, 'error');
+        notify(friendlyScanError('pickup', result.error, order.delivery_mode), 'error');
         return;
       }
 
@@ -1077,7 +1078,7 @@ function DropIntoHoleFlow({
         p_pigeon_hole_qr_value: value,
       });
       if (error) {
-        notify(error.message || 'Could not verify this pigeon hole. Please try again.', 'error');
+        notify(friendlyScanError('verify-hole', error.message), 'error');
         return;
       }
       const step = data as { hole_id?: string; hole_number?: string; dropped?: number; expected?: number } | null;
@@ -1086,7 +1087,7 @@ function DropIntoHoleFlow({
         return;
       }
       if (step.hole_id !== holeId) {
-        notify('Wrong pigeon hole. Scan the currently unlocked hole for this order.', 'error');
+        notify(`Wrong hole - please scan the highlighted hole (${holeNumber}) for this order.`, 'error');
         return;
       }
       setHoleQrValue(value);
@@ -1117,12 +1118,7 @@ function DropIntoHoleFlow({
         p_device_id: navigator.userAgent.slice(0, 64),
       }));
       if (!result.ok) {
-        notify(
-          result.error === 'Wrong bag, bag does not belong to the hole'
-            ? 'Wrong bag, bag does not belong to the hole'
-            : `Scan rejected: ${result.error || 'unknown error, please try again'}`,
-          'error',
-        );
+        notify(friendlyScanError('sort-bag', result.error), 'error');
         return;
       }
       const placement = result.data as
@@ -1299,7 +1295,7 @@ function ChooseHoleAndDropFlow({
         p_order_id: order.id,
       });
       if (error) {
-        notify(error.message || 'Could not use this hole. Scan another free hole.', 'error');
+        notify(friendlyScanError('claim-hole', error.message, order.delivery_mode), 'error');
         return;
       }
       const held = data as { hole_id?: string; hole_number?: string } | null;
@@ -1332,7 +1328,7 @@ function ChooseHoleAndDropFlow({
         p_device_id: navigator.userAgent.slice(0, 64),
       }));
       if (!result.ok) {
-        notify(`Scan rejected: ${result.error || 'unknown error, please try again'}`, 'error');
+        notify(friendlyScanError('chosen-bag', result.error, order.delivery_mode), 'error');
         return;
       }
       const placement = result.data as
