@@ -144,9 +144,18 @@ export function SortWallPage() {
         ))}
       </section>
 
-      {sortWalls.map((wall) => (
+      {[...sortWalls]
+        .sort((a, b) => (a.delivery_mode ?? 'zzz').localeCompare(b.delivery_mode ?? 'zzz') || a.name.localeCompare(b.name))
+        .map((wall) => (
         <section key={wall.id}>
-          <h2>{wall.name}</h2>
+          <div className="wall-heading-row">
+            <h2>{wall.name}</h2>
+            {wall.delivery_mode && (
+              <span className={`state-pill ${wall.delivery_mode === 'LMS' ? 'tone-info' : 'tone-attention'}`}>
+                {wall.delivery_mode}
+              </span>
+            )}
+          </div>
           <div className="pigeon-hole-grid">
             {holes
               .filter((h) => h.sort_wall_id === wall.id)

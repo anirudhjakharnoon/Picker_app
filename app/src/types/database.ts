@@ -67,6 +67,9 @@ export interface Order {
   // Optional: only present once migration 0005 has been applied. The UI reads
   // it defensively so the app works with or without that migration.
   is_fragile?: boolean;
+  // Optional: only present once migration 0016 has been applied. Comes from the
+  // store order API; routes the shipment to the matching sort wall.
+  delivery_mode?: DeliveryMode | null;
   assigned_picker_id: string | null;
   warehouse_id: string | null;
   sort_wall_id: string | null;
@@ -102,6 +105,8 @@ export interface Warehouse {
   gate_qr_rotation_minutes?: number;
 }
 
+export type DeliveryMode = 'LMS' | 'Hyperlocal';
+
 export interface SortWall {
   id: string;
   warehouse_id: string;
@@ -109,6 +114,10 @@ export interface SortWall {
   rows: number;
   columns: number;
   status: 'active' | 'inactive';
+  // Optional: only present once migration 0016 has been applied. Tags the wall
+  // as the LMS wall or the Hyperlocal wall; holes on it accept only shipments
+  // of that delivery mode.
+  delivery_mode?: DeliveryMode | null;
 }
 
 export interface PigeonHole {

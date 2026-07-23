@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabaseClient';
 import { useOrders } from '../lib/useOrders';
 import { QrCodePreview } from '../components/QrCodePreview';
 import { WarehouseGateQr } from '../components/WarehouseGateQr';
-import { EyeIcon } from '../components/icons';
+import { EyeIcon, TrashIcon } from '../components/icons';
 import { StatusPill } from '../components/StatusPill';
 import { orderStatusMeta, holeStatusMeta } from '../lib/status';
 import { useToast } from '../lib/useToast';
@@ -72,7 +72,8 @@ export function AdminPage() {
     const form = new FormData(formEl);
     const isFragile = form.get('fragile') === 'on';
     const storeName = (form.get('storeName') as string | null)?.trim() || null;
-    const usedExtendedArgs = isFragile || !!storeName;
+    const deliveryMode = (form.get('deliveryMode') as string | null) || null;
+    const usedExtendedArgs = isFragile || !!storeName || !!deliveryMode;
 
     const baseArgs = {
       p_store_external_ref: form.get('storeRef'),
@@ -85,6 +86,7 @@ export function AdminPage() {
       ...baseArgs,
       ...(isFragile ? { p_is_fragile: true } : {}),
       ...(storeName ? { p_store_name: storeName } : {}),
+      ...(deliveryMode ? { p_delivery_mode: deliveryMode } : {}),
     };
 
     let { data, error } = await supabase.rpc('admin_create_order_v1', extendedArgs);
@@ -176,6 +178,46 @@ export function AdminPage() {
         ]);
       }
     }
+  };
+
+  const createSortWall = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formEl = e.currentTarget;
+    const form = new FormData(formEl);
+    const { error } = await supabase.rpc('admin_create_sort_wall_v1', {
+      p_warehouse_id: form.get('wallWarehouseId'),
+      p_name: form.get('wallName'),
+      p_delivery_mode: form.get('wallDeliveryMode') || null,
+    });
+    if (error) {
+      notify(`Could not create sort wall: ${error.message}`, 'error');
+      return;
+    }
+    notify('Sort wall created.', 'success');
+    formEl.reset();
+    void loadRefData();
+  };
+
+  const deleteHole = async (hole: PigeonHole) => {
+    if (!window.confirm(`Delete pigeon hole ${hole.hole_number}? This removes the hole and its QR code.`)) return;
+    const { error } = await supabase.rpc('admin_delete_pigeon_hole_v1', { p_pigeon_hole_id: hole.id });
+    if (error) {
+      notify(`Could not delete hole: ${error.message}`, 'error');
+      return;
+    }
+    notify(`Pigeon hole ${hole.hole_number} deleted.`, 'success');
+    void loadRefData();
+  };
+
+  const deleteWall = async (wall: SortWall) => {
+    if (!window.confirm(`Delete "${wall.name}" and all its pigeon holes? This cannot be undone.`)) return;
+    const { error } = await supabase.rpc('admin_delete_sort_wall_v1', { p_sort_wall_id: wall.id });
+    if (error) {
+      notify(`Could not delete wall: ${error.message}`, 'error');
+      return;
+    }
+    notify(`Sort wall "${wall.name}" deleted.`, 'success');
+    void loadRefData();
   };
 
   const assignPicker = async (orderId: string, pickerId: string) => {
@@ -345,6 +387,13 @@ export function AdminPage() {
             Address
             <input name="address" defaultValue="Mirdif City Centre, Level 1 - Sheikh Zayed Rd - Dubai" />
           </label>
+          <label>
+            Delivery mode
+            <select name="deliveryMode" defaultValue="LMS">
+              <option value="LMS">LMS</option>
+              <option value="Hyperlocal">Hyperlocal</option>
+            </select>
+          </label>
           <label className="checkbox-row">
             <input name="fragile" type="checkbox" />
             Fragile items
@@ -358,14 +407,47 @@ export function AdminPage() {
       </section>
 
       <section>
+        <h2>Create sort wall</h2>
+        <p className="hint">
+          Tag a wall as the LMS wall or the Hyperlocal wall. A shipment can only be
+          placed on holes of a wall matching its delivery mode. Requires migration
+          <code> 0016_delivery_mode_walls.sql</code>.
+        </p>
+        <form onSubmit={createSortWall}>
+          <label>
+            Warehouse
+            <select name="wallWarehouseId" required>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Wall name
+            <input name="wallName" required placeholder="LMS Wall" />
+          </label>
+          <label>
+            Delivery mode
+            <select name="wallDeliveryMode" defaultValue="LMS">
+              <option value="LMS">LMS</option>
+              <option value="Hyperlocal">Hyperlocal</option>
+              <option value="">Untagged (any)</option>
+            </select>
+          </label>
+          <button type="submit">Create sort wall</button>
+        </form>
+      </section>
+
+      <section>
         <h2>Create pigeon holes</h2>
+        <p className="hint">Use a distinct prefix per wall (e.g. LMS / HL) so hole numbers stay unique across walls.</p>
         <form onSubmit={createHoles}>
           <label>
             Sort wall
             <select name="sortWallId" required>
               {sortWalls.map((sw) => (
                 <option key={sw.id} value={sw.id}>
-                  {sw.name}
+                  {sw.name}{sw.delivery_mode ? ` (${sw.delivery_mode})` : ''}
                 </option>
               ))}
             </select>
@@ -481,28 +563,64 @@ export function AdminPage() {
 
       <section className="admin-pigeon-holes">
         <h2>Pigeon-hole QR codes</h2>
-        <p className="hint">Tap the eye to view and scan the QR code for a specific pigeon hole.</p>
-        <div className="admin-hole-grid">
-          {holes.map((hole) => (
-            <div className="admin-hole-row" key={hole.id}>
-              <span>
-                <strong>{hole.hole_number}</strong>
-                <span className="admin-hole-meta">
-                  <StatusPill meta={holeStatusMeta(hole.status)} />
-                  <small>{hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
-                </span>
-              </span>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`Show QR code for pigeon hole ${hole.hole_number}`}
-                onClick={() => void viewHoleQr(hole)}
-              >
-                <EyeIcon />
-              </button>
+        <p className="hint">Holes are grouped by sort wall. Tap the eye to view a hole&apos;s QR code, or the bin to delete a hole. Delete a whole wall from its heading.</p>
+        {sortWalls.length === 0 && <p className="empty-state">No sort walls yet. Create one above.</p>}
+        {sortWalls.map((wall) => {
+          const wallHoles = holes.filter((h) => h.sort_wall_id === wall.id);
+          return (
+            <div className="admin-wall-group" key={wall.id}>
+              <div className="admin-wall-group-head">
+                <div className="wall-heading-row">
+                  <h3>{wall.name}</h3>
+                  {wall.delivery_mode && (
+                    <span className={`state-pill ${wall.delivery_mode === 'LMS' ? 'tone-info' : 'tone-attention'}`}>
+                      {wall.delivery_mode}
+                    </span>
+                  )}
+                  <small className="admin-wall-count">{wallHoles.length} hole(s)</small>
+                </div>
+                <button type="button" className="secondary-button" onClick={() => void deleteWall(wall)}>
+                  Delete wall
+                </button>
+              </div>
+              {wallHoles.length === 0 ? (
+                <p className="hint">No holes on this wall yet.</p>
+              ) : (
+                <div className="admin-hole-grid">
+                  {wallHoles.map((hole) => (
+                    <div className="admin-hole-row" key={hole.id}>
+                      <span>
+                        <strong>{hole.hole_number}</strong>
+                        <span className="admin-hole-meta">
+                          <StatusPill meta={holeStatusMeta(hole.status)} />
+                          <small>{hole.bag_capacity ?? configuration?.bags_per_pigeon_hole ?? 0} bags</small>
+                        </span>
+                      </span>
+                      <span className="admin-hole-actions">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Show QR code for pigeon hole ${hole.hole_number}`}
+                          onClick={() => void viewHoleQr(hole)}
+                        >
+                          <EyeIcon />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button icon-button-danger"
+                          aria-label={`Delete pigeon hole ${hole.hole_number}`}
+                          onClick={() => void deleteHole(hole)}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
+          );
+        })}
       </section>
 
       <section className="danger-zone">
