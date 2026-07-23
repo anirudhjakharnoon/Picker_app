@@ -21,7 +21,8 @@ type Screen =
   | { name: 'dropoff' }
   | { name: 'scan-gate' }
   | { name: 'sorting' }
-  | { name: 'drop-into-hole'; orderId: string; holeId: string; holeNumber: string };
+  | { name: 'drop-into-hole'; orderId: string; holeId: string; holeNumber: string }
+  | { name: 'choose-hole'; orderId: string };
 
 type QueueTab = 'pending' | 'in_progress' | 'picked_up';
 
@@ -60,6 +61,25 @@ function useBagScanMode(): BagScanMode {
   return mode;
 }
 
+type HoleAssignmentMode = 'pre_assigned' | 'picker_chosen';
+
+// Reads the operations-wide pigeon-hole assignment mode (migration 0015).
+// Defaults to 'pre_assigned' if the reader RPC is missing so the existing flow
+// keeps working on an un-migrated project.
+function useHoleAssignmentMode(): HoleAssignmentMode {
+  const [mode, setMode] = useState<HoleAssignmentMode>('pre_assigned');
+  useEffect(() => {
+    let active = true;
+    void supabase.rpc('get_hole_assignment_mode_v1').then(({ data }) => {
+      if (active && (data === 'picker_chosen' || data === 'pre_assigned')) setMode(data);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return mode;
+}
+
 export function PickerPage() {
   const { profile, patchProfile, refreshProfile } = useAuth();
   const { orders, refetch } = useOrders();
@@ -68,6 +88,7 @@ export function PickerPage() {
   const [activeTab, setActiveTab] = useState<QueueTab>('pending');
   const { toast, notify } = useToast(4000);
   const [onlineToggleBusy, setOnlineToggleBusy] = useState(false);
+  const holeMode = useHoleAssignmentMode();
 
   // The handoff bar is `position: fixed`, so the scrollable content behind
   // it needs bottom padding reserved for exactly its rendered height — a
@@ -375,6 +396,7 @@ export function PickerPage() {
     return (
       <GateScanScreen
         orderIds={pickedUp.map((o) => o.id)}
+        holeMode={holeMode}
         onClose={() => setScreen({ name: 'queue' })}
         onDone={async () => {
           await refetch();
@@ -395,17 +417,40 @@ export function PickerPage() {
           {inSorting.length === 0 && (
             <div className="empty-state">Nothing left to sort. Great work!</div>
           )}
-          {inSorting.map((o) => (
-            <SortingOrderStep
-              key={o.id}
-              order={o}
-              onOpenHole={(holeId, holeNumber) =>
-                setScreen({ name: 'drop-into-hole', orderId: o.id, holeId, holeNumber })
-              }
-            />
-          ))}
+          {inSorting.map((o) =>
+            holeMode === 'picker_chosen' ? (
+              <ChooseHoleStep
+                key={o.id}
+                order={o}
+                onChooseHole={() => setScreen({ name: 'choose-hole', orderId: o.id })}
+              />
+            ) : (
+              <SortingOrderStep
+                key={o.id}
+                order={o}
+                onOpenHole={(holeId, holeNumber) =>
+                  setScreen({ name: 'drop-into-hole', orderId: o.id, holeId, holeNumber })
+                }
+              />
+            ),
+          )}
         </div>
       </div>
+    );
+  }
+
+  if (screen.name === 'choose-hole') {
+    const order = orders.find((o) => o.id === screen.orderId);
+    return (
+      <ChooseHoleAndDropFlow
+        order={order}
+        onDone={async () => {
+          await refetch();
+          setScreen({ name: 'sorting' });
+        }}
+        notify={notify}
+        toast={toast}
+      />
     );
   }
 
@@ -761,13 +806,18 @@ function PickupFlow({
     );
   }
 
-  // all-collected
+  // all-collected. In one_bag mode a single scan marked every bag, so we ask
+  // the picker to physically confirm the bag count before finishing.
   return (
     <FullscreenSheet onClose={onClose} toast={toast}>
       <div className="sheet-body center fade-in">
-        <h2>You have collected all the bags!</h2>
+        <h2>{oneBag ? 'Confirm your bags' : 'You have collected all the bags!'}</h2>
         <p className="sheet-sub">
-          <strong>{expected}</strong> of {expected} bags picked up
+          {oneBag ? (
+            <>Please ensure you have picked up <strong>{expected}</strong> bags</>
+          ) : (
+            <><strong>{expected}</strong> of {expected} bags picked up</>
+          )}
         </p>
         <BagsGrid total={expected} collected={expected} />
       </div>
@@ -780,7 +830,7 @@ function PickupFlow({
             onClose();
           }}
         >
-          Done!
+          {oneBag ? `Confirm ${expected} bags` : 'Done!'}
         </button>
       </div>
     </FullscreenSheet>
@@ -799,27 +849,34 @@ interface WarehouseArrivalRow {
 
 function GateScanScreen({
   orderIds,
+  holeMode,
   onClose,
   onDone,
   notify,
   toast,
 }: {
   orderIds: string[];
+  holeMode: HoleAssignmentMode;
   onClose: () => void;
   onDone: () => Promise<void>;
   notify: (msg: string, variant?: ToastVariant) => void;
   toast: Toast | null;
 }) {
+  const pickerChosen = holeMode === 'picker_chosen';
   const [paused, setPaused] = useState(false);
   const [result, setResult] = useState<WarehouseArrivalRow[] | null>(null);
 
   const completeArrival = (rows: WarehouseArrivalRow[]) => {
     setResult(rows);
-    const overflow = rows.filter((row) => !row.reserved);
-    if (overflow.length > 0) {
-      notify(`${overflow.length} order(s) have no free hole yet — hold those bags for staging.`, 'error');
+    if (pickerChosen) {
+      notify('Arrived. Choose a pigeon hole for each shipment at the wall.', 'success');
     } else {
-      notify('Pigeon holes assigned. Continue to sorting.', 'success');
+      const overflow = rows.filter((row) => !row.reserved);
+      if (overflow.length > 0) {
+        notify(`${overflow.length} order(s) have no free hole yet — hold those bags for staging.`, 'error');
+      } else {
+        notify('Pigeon holes assigned. Continue to sorting.', 'success');
+      }
     }
     window.setTimeout(() => {
       void onDone();
@@ -831,12 +888,15 @@ function GateScanScreen({
     setPaused(true);
 
     try {
-      const result = await submitAction('record_warehouse_arrival', (clientEventId) => ({
-        p_client_event_id: clientEventId,
-        p_gate_qr_value: value,
-        p_order_ids: orderIds,
-        p_client_captured_at: new Date().toISOString(),
-      }));
+      const result = await submitAction(
+        pickerChosen ? 'record_warehouse_arrival_picker_chosen' : 'record_warehouse_arrival',
+        (clientEventId) => ({
+          p_client_event_id: clientEventId,
+          p_gate_qr_value: value,
+          p_order_ids: orderIds,
+          p_client_captured_at: new Date().toISOString(),
+        }),
+      );
       if (result.ok) {
         completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
       } else {
@@ -860,7 +920,11 @@ function GateScanScreen({
         <ul className="arrival-list">
           {result.map((r) => (
             <li key={r.order_id}>
-              {r.reserved ? `Go to hole ${r.pigeon_hole_number}` : 'No hole yet — hold in staging'}
+              {pickerChosen
+                ? 'Arrived - choose a hole at the wall'
+                : r.reserved
+                  ? `Go to hole ${r.pigeon_hole_number}`
+                  : 'No hole yet — hold in staging'}
             </li>
           ))}
         </ul>
@@ -923,9 +987,38 @@ function SortingOrderStep({
       )}
       <div className="sorting-locked-holes">
         {steps.filter((step) => !step.is_unlocked).map((step, index) => (
-          <span key={step.hole_id}>🔒 Next pigeon hole locked{index > 0 ? ` +${index}` : ''}</span>
+          <span key={step.hole_id}>Next pigeon hole locked{index > 0 ? ` (${index + 1})` : ''}</span>
         ))}
       </div>
+    </article>
+  );
+}
+
+// Picker-chosen mode: no hole is pre-assigned, so the sort card just launches
+// the "scan a hole, then scan bags into it" flow.
+function ChooseHoleStep({
+  order,
+  onChooseHole,
+}: {
+  order: Order;
+  onChooseHole: () => void;
+}) {
+  const started = order.pigeon_hole_id != null;
+  return (
+    <article className="sorting-order-card">
+      <div className="sorting-order-header">
+        <span className="order-number">{order.external_order_ref}</span>
+        <span className="sorting-total">Dropped {order.bag_count_scanned_sort}/{order.bag_count_expected} bags</span>
+      </div>
+      <button type="button" className="sorting-current-hole" onClick={onChooseHole}>
+        <span>{started ? 'Continue placing bags' : 'Choose a pigeon hole'}</span>
+        <strong>{started ? 'Re-scan your hole' : 'Scan any free hole'}</strong>
+        <small>
+          {started
+            ? 'All bags for this shipment go in the same hole.'
+            : 'The hole locks to this shipment on the first bag.'}
+        </small>
+      </button>
     </article>
   );
 }
@@ -1029,7 +1122,9 @@ function DropIntoHoleFlow({
       setDropped(placement.dropped);
       setExpected(placement.expected);
       setPhase(placement.hole_complete ? 'complete' : 'bag-collected');
-      if (placement.hole_complete) {
+      // In one_bag mode the picker must confirm the bag count on the complete
+      // screen, so don't auto-advance there.
+      if (placement.hole_complete && !oneBag) {
         window.setTimeout(() => void onDone(), 1100);
       }
     } catch (err) {
@@ -1086,14 +1181,23 @@ function DropIntoHoleFlow({
           <div className="success-checkmark">
             <CheckIcon />
           </div>
-          <h2>Pigeon hole {holeNumber} complete</h2>
+          <h2>{oneBag ? 'Confirm your bags' : `Pigeon hole ${holeNumber} complete`}</h2>
           <p className="sheet-sub">
-            {oneBag
-              ? 'Shipment sorted and ready for dispatch.'
-              : 'The next pigeon hole is now unlocked.'}
+            {oneBag ? (
+              <>Please ensure you have placed <strong>{expected}</strong> bags in hole {holeNumber}</>
+            ) : (
+              'The next pigeon hole is now unlocked.'
+            )}
           </p>
           <BagsGrid total={expected} collected={expected} />
         </div>
+        {oneBag && (
+          <div className="sheet-footer">
+            <button type="button" className="dark-button" onClick={() => void onDone()}>
+              Confirm {expected} bags
+            </button>
+          </div>
+        )}
       </FullscreenSheet>
     );
   }
@@ -1129,6 +1233,182 @@ function DropIntoHoleFlow({
           repeatedly stopping/re-requesting the camera stream between
           phases caused a black-screen bug. */}
       <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} paused={paused} />
+    </FullscreenSheet>
+  );
+}
+
+type ChooseHolePhase = 'scan' | 'bag-collected' | 'complete';
+
+// Picker-chosen sorting: scan any free hole to hold it, then scan bag(s). The
+// first bag links the hole to this shipment (server-enforced); only this
+// shipment's bags may go in it. Works in both bag-scan modes.
+function ChooseHoleAndDropFlow({
+  order,
+  onDone,
+  notify,
+  toast,
+}: {
+  order: Order | undefined;
+  onDone: () => Promise<void>;
+  notify: (msg: string, variant?: ToastVariant) => void;
+  toast: Toast | null;
+}) {
+  const scanMode = useBagScanMode();
+  const oneBag = scanMode === 'one_bag';
+  const [phase, setPhase] = useState<ChooseHolePhase>('scan');
+  const [paused, setPaused] = useState(false);
+  const [hole, setHole] = useState<{ id: string; number: string; qr: string } | null>(null);
+  const [dropped, setDropped] = useState(0);
+  const [expected, setExpected] = useState(order?.bag_count_expected ?? 0);
+  const placedRef = useRef(false);
+
+  const closeFlow = () => {
+    // Free the hold if no bag was placed yet, so an abandoned hole doesn't stay
+    // locked. A hole already linked to a shipment is untouched by this call.
+    if (!placedRef.current) void supabase.rpc('release_held_hole_v1');
+    void onDone();
+  };
+
+  if (!order) {
+    return (
+      <FullscreenSheet onClose={() => void onDone()} toast={toast}>
+        <div className="empty-state">This shipment is no longer available.</div>
+      </FullscreenSheet>
+    );
+  }
+
+  const claimHole = async (value: string) => {
+    if (paused) return;
+    setPaused(true);
+    try {
+      const { data, error } = await supabase.rpc('claim_pigeon_hole_v1', {
+        p_hole_qr_value: value,
+        p_order_id: order.id,
+      });
+      if (error) {
+        notify(error.message || 'Could not use this hole. Scan another free hole.', 'error');
+        return;
+      }
+      const held = data as { hole_id?: string; hole_number?: string } | null;
+      if (!held || typeof held.hole_id !== 'string' || typeof held.hole_number !== 'string') {
+        notify('Unexpected response claiming the hole. Please try again.', 'error');
+        return;
+      }
+      setHole({ id: held.hole_id, number: held.hole_number, qr: value });
+    } catch (err) {
+      notify(err instanceof Error ? `Could not use this hole: ${err.message}` : 'Could not use this hole. Please try again.', 'error');
+    } finally {
+      setPaused(false);
+    }
+  };
+
+  const placeBag = async (value: string) => {
+    if (paused || !hole) return;
+    setPaused(true);
+    try {
+      const result = await submitAction('scan_bag_into_chosen_hole', (clientEventId) => ({
+        p_client_event_id: clientEventId,
+        p_order_id: order.id,
+        p_bag_qr_value: value,
+        p_pigeon_hole_qr_value: hole.qr,
+        p_client_captured_at: new Date().toISOString(),
+        p_device_id: navigator.userAgent.slice(0, 64),
+      }));
+      if (!result.ok) {
+        notify(`Scan rejected: ${result.error || 'unknown error, please try again'}`, 'error');
+        return;
+      }
+      const placement = result.data as
+        | { dropped?: number; expected?: number; hole_complete?: boolean }
+        | undefined;
+      if (!placement || typeof placement.dropped !== 'number' || typeof placement.expected !== 'number') {
+        notify('Unexpected response from the server. Please try scanning that bag again.', 'error');
+        return;
+      }
+      placedRef.current = true;
+      setDropped(placement.dropped);
+      setExpected(placement.expected);
+      setPhase(placement.hole_complete ? 'complete' : 'bag-collected');
+      if (placement.hole_complete && !oneBag) {
+        window.setTimeout(() => void onDone(), 1100);
+      }
+    } catch (err) {
+      notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.', 'error');
+    } finally {
+      setPaused(false);
+    }
+  };
+
+  if (phase === 'bag-collected') {
+    const remaining = Math.max(expected - dropped, 0);
+    return (
+      <FullscreenSheet onClose={closeFlow} toast={toast}>
+        <div className="sheet-body center fade-in">
+          <h2>You have placed Bag #{dropped}</h2>
+          <p className="sheet-sub">
+            This shipment has {expected} bags · <strong>{remaining}</strong> remaining, all in hole {hole?.number}
+          </p>
+          <BagsGrid total={expected} collected={dropped} />
+        </div>
+        <div className="sheet-footer">
+          <button type="button" className="dark-button" onClick={() => setPhase('scan')}>
+            Place next bag
+          </button>
+        </div>
+      </FullscreenSheet>
+    );
+  }
+
+  if (phase === 'complete') {
+    return (
+      <FullscreenSheet onClose={closeFlow} toast={toast}>
+        <div className="sheet-body center fade-in">
+          <div className="success-checkmark">
+            <CheckIcon />
+          </div>
+          <h2>{oneBag ? 'Confirm your bags' : `Placed in hole ${hole?.number}`}</h2>
+          <p className="sheet-sub">
+            {oneBag ? (
+              <>Please ensure you have placed <strong>{expected}</strong> bags in hole {hole?.number}</>
+            ) : (
+              'Shipment sorted and ready for dispatch.'
+            )}
+          </p>
+          <BagsGrid total={expected} collected={expected} />
+        </div>
+        {oneBag && (
+          <div className="sheet-footer">
+            <button type="button" className="dark-button" onClick={() => void onDone()}>
+              Confirm {expected} bags
+            </button>
+          </div>
+        )}
+      </FullscreenSheet>
+    );
+  }
+
+  // 'scan' — hold a hole first, then place bags into it.
+  return (
+    <FullscreenSheet onClose={closeFlow} toast={toast}>
+      <div className="scan-heading fade-in">
+        <p className="scan-order">Sorting {order.external_order_ref}</p>
+        <h2 className="scan-title">
+          {!hole ? 'Scan a pigeon hole' : `Scan a bag to place in ${hole.number}`}
+        </h2>
+        <p className="scan-sub">
+          {!hole
+            ? 'Scan any empty hole to hold it for this shipment.'
+            : oneBag
+              ? `Scanning one bag places the whole shipment in hole ${hole.number}.`
+              : `All ${expected} bags for this shipment go in hole ${hole.number}.`}
+        </p>
+        {hole && (
+          <p className="scan-counts">
+            <strong>{dropped}</strong> placed · <strong>{Math.max(expected - dropped, 0)}</strong> remaining
+          </p>
+        )}
+      </div>
+      <QrScannerView onDecode={hole ? placeBag : claimHole} paused={paused} />
     </FullscreenSheet>
   );
 }
