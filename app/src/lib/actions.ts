@@ -6,7 +6,9 @@ export type ActionType =
   | 'scan_bag_for_sort'
   | 'scan_pigeon_hole'
   | 'scan_bag_into_pigeon_hole'
-  | 'record_warehouse_arrival';
+  | 'scan_bag_into_chosen_hole'
+  | 'record_warehouse_arrival'
+  | 'record_warehouse_arrival_picker_chosen';
 
 export interface ActionResult {
   localId: string;
@@ -50,7 +52,11 @@ function rpcNameFor(type: ActionType): string {
       return 'scan_pigeon_hole_v1';
     case 'scan_bag_into_pigeon_hole':
       return 'scan_bag_into_pigeon_hole_v1';
+    case 'scan_bag_into_chosen_hole':
+      return 'scan_bag_into_chosen_hole_v1';
     case 'record_warehouse_arrival':
       return 'record_warehouse_arrival_v1';
+    case 'record_warehouse_arrival_picker_chosen':
+      return 'record_warehouse_arrival_picker_chosen_v1';
   }
 }
