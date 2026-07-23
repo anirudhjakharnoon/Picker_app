@@ -445,6 +445,13 @@ section {
   flex: 1;
 }
 
+/* Picker view has no hamburger, so there is no floating button to clear — sit
+   the content near the top (just below the device safe-area) instead of
+   reserving a dead 3rem band. */
+.app-main--flush {
+  padding-top: max(clamp(0.85rem, 3vw, 1.25rem), env(safe-area-inset-top));
+}
+
 /* --- Shared surfaces and utility text --- */
 .empty-state {
   padding: 1rem;
@@ -1428,23 +1435,43 @@ section {
 
 .picker-screen {
   gap: 0.9rem;
-  padding-bottom: 8.5rem; /* room for the fixed handoff bar */
+  /* The handoff bar's real height is measured in a useLayoutEffect (before
+     paint) and applied as inline padding-bottom whenever the bar is present.
+     This modest fallback only covers the offline/empty case where no bar
+     renders, so the screen no longer shows a large dead band at the bottom. */
+  padding-bottom: 1.5rem;
 }
 
 /* --- Pending Pickup top bar --- */
 .picker-topbar {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.35rem 0 0.15rem;
+  gap: 0.5rem;
+  padding: 0.15rem 0 0.1rem;
 }
 
 .picker-title {
   flex: 1;
+  min-width: 0;
   margin: 0;
-  font-size: 1.3rem;
+  font-size: clamp(1rem, 3.4vw, 1.25rem);
   font-weight: 800;
+  /* The global h1 applies wide display tracking; on a narrow phone top bar
+     that pushes this two-word title onto a second line next to the online
+     toggle. Normal tracking keeps it on one line while staying all-caps. */
+  letter-spacing: 0;
   color: var(--color-heading);
+}
+
+/* Compact sign-out for the picker top bar (replaces the removed hamburger). */
+.picker-signout {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.picker-signout:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
 }
 
 .icon-button {
@@ -1469,14 +1496,17 @@ section {
 .online-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.4rem;
+  flex-shrink: 0;
   min-height: 42px;
-  padding: 0.4rem 0.55rem 0.4rem 1rem;
+  padding: 0.4rem 0.5rem 0.4rem 0.85rem;
   border: 1px solid var(--color-border-strong);
   border-radius: 999px;
   background: var(--color-surface-subtle);
   color: var(--color-text-muted);
   font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
 }
 
 .online-toggle.is-online {
@@ -1976,15 +2006,7 @@ section {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding-top: 0.4rem;
-}
-
-.sheet-grip {
-  width: 44px;
-  height: 5px;
-  margin: 0 auto;
-  border-radius: 999px;
-  background: var(--color-border-strong);
+  padding-top: 0.1rem;
 }
 
 .sheet-header-row {

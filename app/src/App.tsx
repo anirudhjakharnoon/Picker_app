@@ -42,14 +42,17 @@ function AppShell() {
     .filter(([, roles]) => roles.includes(profile.role))
     .map(([path]) => path);
 
+  // Pickers work almost entirely inside full-screen scan flows on a phone, so
+  // the floating hamburger is just clutter that overlaps their content — they
+  // have a single tab anyway. They sign out from their own top bar instead.
+  // Every other role keeps the hamburger as its navigation chrome.
+  const isPicker = profile.role === 'picker';
+
   return (
     <div className="app-shell">
-      {/* No persistent header/title bar by design — the hamburger menu is the
-          entire site chrome. Scanner screens render as fullscreen overlays
-          that cover this button, so there is nothing to conditionally hide. */}
-      <AppMenu tabs={allowedTabs} role={profile.role} />
+      {!isPicker && <AppMenu tabs={allowedTabs} role={profile.role} />}
 
-      <main className="app-main">
+      <main className={`app-main${isPicker ? ' app-main--flush' : ''}`}>
         <Routes>
           <Route path="/picker" element={<Guarded role={profile.role} allowed={['picker']}><PickerPage /></Guarded>} />
           <Route

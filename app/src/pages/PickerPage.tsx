@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabaseClient';
 import { QrScannerView } from '../components/QrScannerView';
 import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
-import { CheckIcon, PinIcon } from '../components/icons';
+import { CheckIcon, PinIcon, LogoutIcon } from '../components/icons';
 import type { Order } from '../types/database';
 import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
 import { StatusPill } from '../components/StatusPill';
@@ -92,7 +92,7 @@ function useHoleAssignmentMode(): HoleAssignmentMode {
 }
 
 export function PickerPage() {
-  const { profile, patchProfile, refreshProfile } = useAuth();
+  const { profile, patchProfile, refreshProfile, signOut } = useAuth();
   const { orders, refetch } = useOrders();
   const storeNames = useStoreNames();
   const [screen, setScreen] = useState<Screen>({ name: 'queue' });
@@ -246,6 +246,7 @@ export function PickerPage() {
           profile={profile}
           busy={onlineToggleBusy}
           onToggleOnline={() => void toggleOnline()}
+          onSignOut={() => void signOut()}
         />
 
         {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
@@ -498,10 +499,12 @@ function PickerHeader({
   profile,
   busy,
   onToggleOnline,
+  onSignOut,
 }: {
   profile: ReturnType<typeof useAuth>['profile'];
   busy: boolean;
   onToggleOnline: () => void;
+  onSignOut: () => void;
 }) {
   const online = profile?.is_online ?? false;
   return (
@@ -518,6 +521,15 @@ function PickerHeader({
         {busy && <span className="button-spinner" aria-hidden="true" />}
         {online ? 'Online' : 'Offline'}
         <span className="online-dot">{online ? <CheckIcon /> : null}</span>
+      </button>
+      <button
+        type="button"
+        className="icon-button picker-signout"
+        onClick={onSignOut}
+        aria-label="Sign out"
+        title="Sign out"
+      >
+        <LogoutIcon />
       </button>
     </header>
   );
@@ -655,7 +667,6 @@ function HandoffBar({
 function SheetHeader({ title, onClose }: { title: string; onClose: () => void }) {
   return (
     <div className="sheet-header">
-      <span className="sheet-grip" aria-hidden="true" />
       <div className="sheet-header-row">
         <h2>{title}</h2>
         <button type="button" className="icon-button close" aria-label="Close" onClick={onClose}>
@@ -706,7 +717,6 @@ function PickupFlow({
   const [phase, setPhase] = useState<PickupPhase>(
     expected > 0 && serverScanned >= expected ? 'all-collected' : 'scanning'
   );
-  const [paused, setPaused] = useState(false);
 
   // The number actually shown is always the server's number once it catches
   // up — the optimistic value only fills the brief gap right after a tap so
@@ -727,9 +737,6 @@ function PickupFlow({
   }
 
   const handleDecode = async (value: string) => {
-    if (paused) return;
-    setPaused(true);
-
     const optimisticNext = Math.min(scanned + 1, expected);
     setOptimisticScanned(optimisticNext); // instant feedback, before the network call
 
@@ -755,12 +762,10 @@ function PickupFlow({
     } catch (err) {
       setOptimisticScanned(serverScanned);
       notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.', 'error');
-    } finally {
-      // Every exit path above already leaves `phase` unchanged on failure,
-      // so re-enabling the scanner here is always correct — this is what
-      // guarantees a failed/unexpected scan never leaves the camera stuck.
-      setPaused(false);
     }
+    // No scanner re-arming needed here: QrScannerView owns that and always
+    // re-arms after this promise settles. On failure `phase` is unchanged, so
+    // the scanner stays mounted and simply keeps scanning for the next code.
   };
 
   if (phase === 'scanning') {
@@ -786,7 +791,7 @@ function PickupFlow({
             <strong>{scanned}</strong> picked up · <strong>{pending}</strong> pending
           </p>
         </div>
-        <QrScannerView onDecode={handleDecode} paused={paused} />
+        <QrScannerView onDecode={handleDecode} />
       </FullscreenSheet>
     );
   }
@@ -803,14 +808,7 @@ function PickupFlow({
           <BagsGrid total={expected} collected={scanned} />
         </div>
         <div className="sheet-footer">
-          <button
-            type="button"
-            className="dark-button"
-            onClick={() => {
-              setPaused(false);
-              setPhase('scanning');
-            }}
-          >
+          <button type="button" className="dark-button" onClick={() => setPhase('scanning')}>
             Pick up next bag
           </button>
         </div>
@@ -875,7 +873,6 @@ function GateScanScreen({
   toast: Toast | null;
 }) {
   const pickerChosen = holeMode === 'picker_chosen';
-  const [paused, setPaused] = useState(false);
   const [result, setResult] = useState<WarehouseArrivalRow[] | null>(null);
 
   const completeArrival = (rows: WarehouseArrivalRow[]) => {
@@ -896,11 +893,8 @@ function GateScanScreen({
   };
 
   const handleDecode = async (value: string) => {
-    if (paused) return;
-    setPaused(true);
-
     try {
-      const result = await submitAction(
+      const arrival = await submitAction(
         pickerChosen ? 'record_warehouse_arrival_picker_chosen' : 'record_warehouse_arrival',
         (clientEventId) => ({
           p_client_event_id: clientEventId,
@@ -909,15 +903,18 @@ function GateScanScreen({
           p_client_captured_at: new Date().toISOString(),
         }),
       );
-      if (result.ok) {
-        completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
+      if (arrival.ok) {
+        // Setting `result` unmounts the scanner immediately, so no second gate
+        // scan can fire during the short hand-off delay.
+        completeArrival((arrival.data as WarehouseArrivalRow[] | null) ?? []);
       } else {
-        notify(`Could not record arrival: ${result.error || 'unknown error, please try again'}`, 'error');
-        setPaused(false);
+        notify(friendlyScanError('gate', arrival.error), 'error');
       }
     } catch (err) {
-      notify(err instanceof Error ? `Could not record arrival: ${err.message}` : 'Could not record arrival. Please try again.', 'error');
-      setPaused(false);
+      notify(
+        err instanceof Error ? friendlyScanError('gate', err.message) : 'Could not record arrival. Please try again.',
+        'error',
+      );
     }
   };
 
@@ -927,7 +924,7 @@ function GateScanScreen({
         <h2 className="scan-title">Scan warehouse gate</h2>
         <p className="scan-sub">Scan the QR code at the warehouse entrance to arrive</p>
       </div>
-      {!result && <QrScannerView onDecode={handleDecode} paused={paused} />}
+      {!result && <QrScannerView onDecode={handleDecode} />}
       {result && (
         <ul className="arrival-list">
           {result.map((r) => (
@@ -1057,21 +1054,15 @@ function DropIntoHoleFlow({
   const scanMode = useBagScanMode();
   const oneBag = scanMode === 'one_bag';
   const [phase, setPhase] = useState<HoleDropPhase>('verify-hole');
-  const [paused, setPaused] = useState(false);
   const [holeQrValue, setHoleQrValue] = useState<string | null>(null);
   const [dropped, setDropped] = useState(0);
   const [expected, setExpected] = useState(0);
 
-  // Both handlers are wrapped in try/catch and ALWAYS release `paused` (and
-  // therefore the scanner's decode lock) on every exit path, including
-  // completely unexpected ones (a thrown error, a malformed RPC response).
-  // Without this, one unhandled exception here would leave `paused=true`
-  // forever with no error shown — which looks exactly like "scanning the
-  // bag does nothing": the camera keeps running, but every further decode
-  // is silently ignored because decodeLockedRef never gets released.
+  // Both handlers are async and are awaited by QrScannerView, which serialises
+  // decodes and always re-arms when the promise settles (see its reliability
+  // contract). Neither handler needs to gate the scanner itself, so a wrong
+  // scan simply shows an error and the scanner keeps looking for the next code.
   const verifyHole = async (value: string) => {
-    if (paused) return;
-    setPaused(true);
     try {
       const { data, error } = await supabase.rpc('verify_pigeon_hole_v1', {
         p_order_id: orderId,
@@ -1096,18 +1087,14 @@ function DropIntoHoleFlow({
       setPhase('hole-arrived');
     } catch (err) {
       notify(err instanceof Error ? `Could not verify hole: ${err.message}` : 'Could not verify hole. Please try again.', 'error');
-    } finally {
-      setPaused(false);
     }
   };
 
   const scanBag = async (value: string) => {
-    if (paused) return;
     if (!holeQrValue) {
       notify('Hole not verified yet — please scan the pigeon hole again.', 'error');
       return;
     }
-    setPaused(true);
     try {
       const result = await submitAction('scan_bag_into_pigeon_hole', (clientEventId) => ({
         p_client_event_id: clientEventId,
@@ -1138,8 +1125,6 @@ function DropIntoHoleFlow({
       }
     } catch (err) {
       notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.', 'error');
-    } finally {
-      setPaused(false);
     }
   };
 
@@ -1236,12 +1221,10 @@ function DropIntoHoleFlow({
           </p>
         )}
       </div>
-      {/* Deliberately the SAME QrScannerView instance (no key/remount)
-          across the hole-verify and bag-scan phases — only the onDecode
-          callback changes. See QrScannerView's `[paused]` effect for why
-          repeatedly stopping/re-requesting the camera stream between
-          phases caused a black-screen bug. */}
-      <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} paused={paused} />
+      {/* Same screen serves both the hole-verify and bag-scan phases; only the
+          onDecode callback swaps, so no `key` is set that would force an extra
+          camera teardown/re-request within a phase. */}
+      <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} />
     </FullscreenSheet>
   );
 }
@@ -1265,7 +1248,6 @@ function ChooseHoleAndDropFlow({
   const scanMode = useBagScanMode();
   const oneBag = scanMode === 'one_bag';
   const [phase, setPhase] = useState<ChooseHolePhase>('scan-hole');
-  const [paused, setPaused] = useState(false);
   const [hole, setHole] = useState<{ id: string; number: string; qr: string } | null>(null);
   const [dropped, setDropped] = useState(0);
   const [expected, setExpected] = useState(order?.bag_count_expected ?? 0);
@@ -1287,8 +1269,6 @@ function ChooseHoleAndDropFlow({
   }
 
   const claimHole = async (value: string) => {
-    if (paused) return;
-    setPaused(true);
     try {
       const { data, error } = await supabase.rpc('claim_pigeon_hole_v1', {
         p_hole_qr_value: value,
@@ -1304,20 +1284,17 @@ function ChooseHoleAndDropFlow({
         return;
       }
       setHole({ id: held.hole_id, number: held.hole_number, qr: value });
-      // Move to a deliberate "hole on hold" screen. This breaks the camera
+      // Move to a deliberate "hole on hold" screen. This unmounts the scanner
       // between the hole scan and the bag scan so the still-visible hole QR
-      // can't immediately re-fire as a (rejected) bag scan and freeze the flow.
+      // can't be read again as a (rejected) bag scan.
       setPhase('hole-held');
     } catch (err) {
       notify(err instanceof Error ? `Could not use this hole: ${err.message}` : 'Could not use this hole. Please try again.', 'error');
-    } finally {
-      setPaused(false);
     }
   };
 
   const placeBag = async (value: string) => {
-    if (paused || !hole) return;
-    setPaused(true);
+    if (!hole) return;
     try {
       const result = await submitAction('scan_bag_into_chosen_hole', (clientEventId) => ({
         p_client_event_id: clientEventId,
@@ -1347,8 +1324,6 @@ function ChooseHoleAndDropFlow({
       }
     } catch (err) {
       notify(err instanceof Error ? `Scan failed: ${err.message}` : 'Scan failed unexpectedly. Please try again.', 'error');
-    } finally {
-      setPaused(false);
     }
   };
 
@@ -1446,7 +1421,7 @@ function ChooseHoleAndDropFlow({
           </p>
         )}
       </div>
-      <QrScannerView onDecode={scanningBag ? placeBag : claimHole} paused={paused} />
+      <QrScannerView onDecode={scanningBag ? placeBag : claimHole} />
     </FullscreenSheet>
   );
 }
