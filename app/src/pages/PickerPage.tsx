@@ -1237,7 +1237,7 @@ function DropIntoHoleFlow({
   );
 }
 
-type ChooseHolePhase = 'scan' | 'bag-collected' | 'complete';
+type ChooseHolePhase = 'scan-hole' | 'hole-held' | 'scan-bag' | 'bag-collected' | 'complete';
 
 // Picker-chosen sorting: scan any free hole to hold it, then scan bag(s). The
 // first bag links the hole to this shipment (server-enforced); only this
@@ -1255,7 +1255,7 @@ function ChooseHoleAndDropFlow({
 }) {
   const scanMode = useBagScanMode();
   const oneBag = scanMode === 'one_bag';
-  const [phase, setPhase] = useState<ChooseHolePhase>('scan');
+  const [phase, setPhase] = useState<ChooseHolePhase>('scan-hole');
   const [paused, setPaused] = useState(false);
   const [hole, setHole] = useState<{ id: string; number: string; qr: string } | null>(null);
   const [dropped, setDropped] = useState(0);
@@ -1295,6 +1295,10 @@ function ChooseHoleAndDropFlow({
         return;
       }
       setHole({ id: held.hole_id, number: held.hole_number, qr: value });
+      // Move to a deliberate "hole on hold" screen. This breaks the camera
+      // between the hole scan and the bag scan so the still-visible hole QR
+      // can't immediately re-fire as a (rejected) bag scan and freeze the flow.
+      setPhase('hole-held');
     } catch (err) {
       notify(err instanceof Error ? `Could not use this hole: ${err.message}` : 'Could not use this hole. Please try again.', 'error');
     } finally {
@@ -1351,8 +1355,31 @@ function ChooseHoleAndDropFlow({
           <BagsGrid total={expected} collected={dropped} />
         </div>
         <div className="sheet-footer">
-          <button type="button" className="dark-button" onClick={() => setPhase('scan')}>
+          <button type="button" className="dark-button" onClick={() => setPhase('scan-bag')}>
             Place next bag
+          </button>
+        </div>
+      </FullscreenSheet>
+    );
+  }
+
+  if (phase === 'hole-held') {
+    return (
+      <FullscreenSheet onClose={closeFlow} toast={toast}>
+        <div className="sheet-body center fade-in">
+          <div className="success-checkmark">
+            <CheckIcon />
+          </div>
+          <h2>Hole {hole?.number} is on hold</h2>
+          <p className="sheet-sub">
+            {oneBag
+              ? `Scan any one bag to place this shipment in hole ${hole?.number}.`
+              : `Scan the ${expected} bags for this shipment into hole ${hole?.number}.`}
+          </p>
+        </div>
+        <div className="sheet-footer">
+          <button type="button" className="dark-button" onClick={() => setPhase('scan-bag')}>
+            Scan a bag
           </button>
         </div>
       </FullscreenSheet>
@@ -1387,28 +1414,30 @@ function ChooseHoleAndDropFlow({
     );
   }
 
-  // 'scan' — hold a hole first, then place bags into it.
+  // 'scan-hole' | 'scan-bag' — one camera; the deliberate 'hole-held' screen
+  // above separates the two so a lingering hole QR can't fire as a bag scan.
+  const scanningBag = phase === 'scan-bag';
   return (
     <FullscreenSheet onClose={closeFlow} toast={toast}>
       <div className="scan-heading fade-in">
         <p className="scan-order">Sorting {order.external_order_ref}</p>
         <h2 className="scan-title">
-          {!hole ? 'Scan a pigeon hole' : `Scan a bag to place in ${hole.number}`}
+          {scanningBag ? `Scan a bag to place in ${hole?.number}` : 'Scan a pigeon hole'}
         </h2>
         <p className="scan-sub">
-          {!hole
+          {!scanningBag
             ? 'Scan any empty hole to hold it for this shipment.'
             : oneBag
-              ? `Scanning one bag places the whole shipment in hole ${hole.number}.`
-              : `All ${expected} bags for this shipment go in hole ${hole.number}.`}
+              ? `Scanning one bag places the whole shipment in hole ${hole?.number}.`
+              : `All ${expected} bags for this shipment go in hole ${hole?.number}.`}
         </p>
-        {hole && (
+        {scanningBag && (
           <p className="scan-counts">
             <strong>{dropped}</strong> placed · <strong>{Math.max(expected - dropped, 0)}</strong> remaining
           </p>
         )}
       </div>
-      <QrScannerView onDecode={hole ? placeBag : claimHole} paused={paused} />
+      <QrScannerView onDecode={scanningBag ? placeBag : claimHole} paused={paused} />
     </FullscreenSheet>
   );
 }
