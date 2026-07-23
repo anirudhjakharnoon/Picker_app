@@ -41,6 +41,16 @@ function formatTime(iso: string): string {
   }
 }
 
+// Small label so a picker can see which wall a shipment belongs to.
+function DeliveryBadge({ order }: { order: Order }) {
+  if (!order.delivery_mode) return null;
+  return (
+    <span className={`state-pill ${order.delivery_mode === 'LMS' ? 'tone-info' : 'tone-attention'}`}>
+      {order.delivery_mode}
+    </span>
+  );
+}
+
 type BagScanMode = 'all_bags' | 'one_bag';
 
 // Reads the operations-wide bag scan mode. operations_configuration is
@@ -555,6 +565,7 @@ function OrderCard({
       <div className="order-card-head">
         <span className="order-number">{order.external_order_ref}</span>
         <StatusPill meta={orderStatusMeta(order.status)} />
+        <DeliveryBadge order={order} />
         <span className="order-time">{formatTime(order.ingested_at)}</span>
       </div>
 
@@ -971,6 +982,7 @@ function SortingOrderStep({
     <article className="sorting-order-card">
       <div className="sorting-order-header">
         <span className="order-number">{order.external_order_ref}</span>
+        <DeliveryBadge order={order} />
         <span className="sorting-total">Dropped {order.bag_count_scanned_sort}/{order.bag_count_expected} bags</span>
       </div>
       {error && <p className="error-text">{error}</p>}
@@ -1008,6 +1020,7 @@ function ChooseHoleStep({
     <article className="sorting-order-card">
       <div className="sorting-order-header">
         <span className="order-number">{order.external_order_ref}</span>
+        <DeliveryBadge order={order} />
         <span className="sorting-total">Dropped {order.bag_count_scanned_sort}/{order.bag_count_expected} bags</span>
       </div>
       <button type="button" className="sorting-current-hole" onClick={onChooseHole}>

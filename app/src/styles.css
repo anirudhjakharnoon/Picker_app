@@ -1225,6 +1225,17 @@ section {
   gap: 0.75rem;
 }
 
+.wall-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.wall-heading-row h2 {
+  margin: 0;
+}
+
 .pigeon-hole-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
