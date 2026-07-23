@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabaseClient';
 import { QrScannerView } from '../components/QrScannerView';
 import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
-import { CheckIcon, PinIcon } from '../components/icons';
+import { CheckIcon, PinIcon, LogoutIcon } from '../components/icons';
 import type { Order } from '../types/database';
 import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
 import { StatusPill } from '../components/StatusPill';
@@ -92,7 +92,7 @@ function useHoleAssignmentMode(): HoleAssignmentMode {
 }
 
 export function PickerPage() {
-  const { profile, patchProfile, refreshProfile } = useAuth();
+  const { profile, patchProfile, refreshProfile, signOut } = useAuth();
   const { orders, refetch } = useOrders();
   const storeNames = useStoreNames();
   const [screen, setScreen] = useState<Screen>({ name: 'queue' });
@@ -246,6 +246,7 @@ export function PickerPage() {
           profile={profile}
           busy={onlineToggleBusy}
           onToggleOnline={() => void toggleOnline()}
+          onSignOut={() => void signOut()}
         />
 
         {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
@@ -498,10 +499,12 @@ function PickerHeader({
   profile,
   busy,
   onToggleOnline,
+  onSignOut,
 }: {
   profile: ReturnType<typeof useAuth>['profile'];
   busy: boolean;
   onToggleOnline: () => void;
+  onSignOut: () => void;
 }) {
   const online = profile?.is_online ?? false;
   return (
@@ -518,6 +521,15 @@ function PickerHeader({
         {busy && <span className="button-spinner" aria-hidden="true" />}
         {online ? 'Online' : 'Offline'}
         <span className="online-dot">{online ? <CheckIcon /> : null}</span>
+      </button>
+      <button
+        type="button"
+        className="icon-button picker-signout"
+        onClick={onSignOut}
+        aria-label="Sign out"
+        title="Sign out"
+      >
+        <LogoutIcon />
       </button>
     </header>
   );
@@ -655,7 +667,6 @@ function HandoffBar({
 function SheetHeader({ title, onClose }: { title: string; onClose: () => void }) {
   return (
     <div className="sheet-header">
-      <span className="sheet-grip" aria-hidden="true" />
       <div className="sheet-header-row">
         <h2>{title}</h2>
         <button type="button" className="icon-button close" aria-label="Close" onClick={onClose}>
@@ -912,11 +923,14 @@ function GateScanScreen({
       if (result.ok) {
         completeArrival((result.data as WarehouseArrivalRow[] | null) ?? []);
       } else {
-        notify(`Could not record arrival: ${result.error || 'unknown error, please try again'}`, 'error');
+        notify(friendlyScanError('gate', result.error), 'error');
         setPaused(false);
       }
     } catch (err) {
-      notify(err instanceof Error ? `Could not record arrival: ${err.message}` : 'Could not record arrival. Please try again.', 'error');
+      notify(
+        err instanceof Error ? friendlyScanError('gate', err.message) : 'Could not record arrival. Please try again.',
+        'error',
+      );
       setPaused(false);
     }
   };
@@ -1062,13 +1076,12 @@ function DropIntoHoleFlow({
   const [dropped, setDropped] = useState(0);
   const [expected, setExpected] = useState(0);
 
-  // Both handlers are wrapped in try/catch and ALWAYS release `paused` (and
-  // therefore the scanner's decode lock) on every exit path, including
-  // completely unexpected ones (a thrown error, a malformed RPC response).
-  // Without this, one unhandled exception here would leave `paused=true`
-  // forever with no error shown — which looks exactly like "scanning the
-  // bag does nothing": the camera keeps running, but every further decode
-  // is silently ignored because decodeLockedRef never gets released.
+  // Both handlers are async and are awaited by QrScannerView, which owns the
+  // decode lock and always re-arms itself when the promise settles (see
+  // QrScannerView's reliability contract). We still flip `paused` here purely
+  // to freeze the on-screen counters during the RPC; even if that were ever
+  // skipped, the scanner could not wedge, because its lock release does not
+  // depend on this component toggling `paused`.
   const verifyHole = async (value: string) => {
     if (paused) return;
     setPaused(true);
@@ -1238,9 +1251,9 @@ function DropIntoHoleFlow({
       </div>
       {/* Deliberately the SAME QrScannerView instance (no key/remount)
           across the hole-verify and bag-scan phases — only the onDecode
-          callback changes. See QrScannerView's `[paused]` effect for why
-          repeatedly stopping/re-requesting the camera stream between
-          phases caused a black-screen bug. */}
+          callback changes. Remounting would tear down and re-request the
+          camera stream between phases, which is exactly the reacquire cycle
+          that caused a black-screen bug on some devices. */}
       <QrScannerView onDecode={phase === 'verify-hole' ? verifyHole : scanBag} paused={paused} />
     </FullscreenSheet>
   );
