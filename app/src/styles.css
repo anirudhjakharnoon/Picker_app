@@ -655,7 +655,7 @@ section {
 
 .admin-hole-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
   gap: 0.65rem;
 }
 
@@ -684,6 +684,43 @@ section {
   align-items: center;
   gap: 0.45rem;
   margin-top: 0.3rem;
+}
+
+.admin-wall-group {
+  margin-bottom: 1.1rem;
+}
+
+.admin-wall-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.admin-wall-group-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.admin-wall-count {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.admin-hole-actions {
+  display: flex;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.icon-button-danger {
+  color: var(--color-danger);
+}
+
+.icon-button-danger:hover {
+  background: var(--color-danger-tint);
 }
 
 .admin-hole-meta small {
@@ -1579,7 +1616,7 @@ section {
 .tone-info    { background: var(--color-info-tint);    color: var(--color-info);    border-color: color-mix(in srgb, var(--color-info) 25%, transparent); }
 .tone-attention { background: var(--color-warning-tint); color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 30%, transparent); }
 .tone-danger  { background: var(--color-danger-tint);  color: var(--color-danger);  border-color: color-mix(in srgb, var(--color-danger) 28%, transparent); }
-.tone-neutral { background: var(--color-surface-subtle); color: var(--color-text-muted); border-color: var(--color-border-strong); }
+.tone-neutral { background: var(--color-surface-subtle); color: var(--color-text); border-color: var(--color-border-strong); }
 
 /* Legacy aliases (kept so any un-migrated markup still reads sensibly). */
 .state-ready { background: var(--color-success-tint); color: var(--color-success); }
