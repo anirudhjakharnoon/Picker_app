@@ -1,51 +1,93 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import QrScanner from 'qr-scanner';
 
 interface QrScannerViewProps {
-  onDecode: (value: string) => void;
   /**
-   * Ignore new decodes while a scan is being processed (e.g. awaiting an
-   * RPC). This deliberately does NOT call the underlying scanner's
-   * pause()/start() — see the comment on the `[paused]` effect below for
-   * why touching the camera stream itself is what caused the "camera turns
-   * solid black and never recovers" bug on real devices.
+   * Called once per accepted decode. May be sync or async; the scanner awaits
+   * the returned promise (if any) and only then accepts the NEXT scan. A
+   * handler that shows an error and returns is completely safe - the scanner
+   * always re-arms itself afterwards, so a wrong scan never freezes the camera.
+   *
+   * There is deliberately NO `paused`/lock prop. The scanner is the single
+   * owner of "am I mid-scan"; callers do not gate it with their own state,
+   * because a caller's async state (set-true-before-await, set-false-after)
+   * used to feed back in and drop the very next code on a stale render - which
+   * is exactly the "wrong QR then correct QR gets stuck" bug. To stop scanning,
+   * a caller simply stops rendering this component (advances to a success
+   * screen), which every flow already does.
    */
-  paused?: boolean;
+  onDecode: (value: string) => void | Promise<void>;
   helperText?: string;
 }
 
+// A code sitting in front of the camera decodes continuously (~5x/sec). We
+// accept a given value once, then ignore that SAME value for this long so a
+// wrong code shows ONE clear error instead of a flood, and a shared bag QR is
+// never double-counted. A DIFFERENT value is always accepted immediately, so
+// correcting a mis-scan - the exact retry the user needs - is instant.
+const SAME_VALUE_COOLDOWN_MS = 1200;
+
 /**
  * Thin wrapper around the `qr-scanner` library (MIT-licensed, no paid API,
- * runs entirely in the browser via getUserMedia — docs Section 19.6/10.6).
+ * runs entirely in the browser via getUserMedia - docs Section 19.6/10.6).
  *
  * Requires a secure context (HTTPS or localhost) and explicit camera
  * permission; both requirements are called out in the design doc's PWA
  * platform constraints (Section 10.6) and surfaced here as a specific error
  * message rather than a silent blank camera view.
+ *
+ * Reliability contract (this is what keeps the on-floor experience seamless):
+ *   - The camera stream is created exactly ONCE per mount and never paused or
+ *     restarted mid-life. Stopping/re-requesting getUserMedia between scans is
+ *     what caused the "camera turns solid black and never recovers" bug on real
+ *     devices, so we never do it.
+ *   - Exactly one decode is processed at a time. The processing flag is cleared
+ *     in a `finally`, so a handler that errors, early-returns, or throws can
+ *     NEVER leave the scanner stuck.
+ *   - Every frame is matched. A wrong code produces one error and the scanner
+ *     immediately keeps scanning; the moment a different (correct) code appears
+ *     it is used. No external pause state can drop that next code.
  */
-export function QrScannerView({ onDecode, paused = false, helperText }: QrScannerViewProps) {
+export function QrScannerView({ onDecode, helperText }: QrScannerViewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const scannerRef = useRef<QrScanner | null>(null);
-  const decodeLockedRef = useRef(false);
+
+  // Refs the decode callback reads so it always sees CURRENT values. The
+  // qr-scanner instance is built once and captures this callback once, so it
+  // must not close over render-time props/state directly.
   const onDecodeRef = useRef(onDecode);
+  const processingRef = useRef(false);
+  const lastValueRef = useRef<{ value: string; at: number } | null>(null);
+  onDecodeRef.current = onDecode;
+
   const [torchOn, setTorchOn] = useState(false);
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualEntry, setManualEntry] = useState('');
   const [showManualEntry, setShowManualEntry] = useState(false);
 
-  onDecodeRef.current = onDecode;
+  const handleValue = useCallback(async (raw: string) => {
+    const value = raw.trim();
+    if (!value) return;
+    // One decode at a time.
+    if (processingRef.current) return;
+    // Debounce repeated reads of the SAME code still sitting in frame; a
+    // different code always passes so the corrective re-scan is never delayed.
+    const now = Date.now();
+    const last = lastValueRef.current;
+    if (last && last.value === value && now - last.at < SAME_VALUE_COOLDOWN_MS) return;
 
-  const emitDecode = (value: string) => {
-    // Camera libraries can decode the same visible QR several times before
-    // React has committed the parent's `paused=true` render. With a shared
-    // order QR, those duplicate callbacks incorrectly count as additional
-    // physical bag scan actions. Lock synchronously inside the callback;
-    // unlock only when the parent explicitly resumes scanning.
-    if (decodeLockedRef.current || paused) return;
-    decodeLockedRef.current = true;
-    onDecodeRef.current(value);
-  };
+    processingRef.current = true;
+    lastValueRef.current = { value, at: now };
+    try {
+      await onDecodeRef.current(value);
+    } finally {
+      // Stamp completion time (covers a slow RPC) and always re-arm. This
+      // `finally` is the single guarantee that the scanner can never wedge.
+      lastValueRef.current = { value, at: Date.now() };
+      processingRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     if (!videoRef.current) return;
@@ -57,12 +99,12 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
 
     const scanner = new QrScanner(
       videoRef.current,
-      (result) => emitDecode(typeof result === 'string' ? result : result.data),
+      (result) => void handleValue(typeof result === 'string' ? result : result.data),
       {
         highlightScanRegion: true,
         highlightCodeOutline: true,
         maxScansPerSecond: 5,
-      }
+      },
     );
     scannerRef.current = scanner;
 
@@ -74,7 +116,7 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
         setError(
           err instanceof Error
             ? `Camera error: ${err.message}. You can use manual entry below instead.`
-            : 'Camera unavailable. You can use manual entry below instead.'
+            : 'Camera unavailable. You can use manual entry below instead.',
         );
       });
 
@@ -83,39 +125,21 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
       scanner.destroy();
       scannerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    // IMPORTANT: this deliberately never calls scanner.pause()/start().
-    //
-    // qr-scanner's pause() stops rendering the <video> element immediately,
-    // but only stops the actual camera MediaStream after a 300ms grace
-    // period (to avoid a permission-prompt flicker on a quick pause/resume).
-    // Any real scan handler here awaits a network RPC before resuming —
-    // almost always longer than 300ms — so every single scan was silently
-    // hitting that deferred path: the camera stream got fully released,
-    // and the following start() had to re-request getUserMedia from
-    // scratch. On several real Android/iOS browser + OS combinations that
-    // stop-then-immediately-reacquire cycle leaves the <video> rendering
-    // solid black indefinitely with no error surfaced (this exact bug was
-    // reported repeatedly for the hole/bag sorting scan flow, which chains
-    // several scans in a row and so hits the flaky reacquire path harder).
-    //
-    // The camera only ever needs to be requested once per component
-    // mount; "processing the last scan" only needs to gate the JS-level
-    // decode callback, not the hardware camera stream itself.
-    if (!paused) decodeLockedRef.current = false;
-  }, [paused]);
+  }, [handleValue]);
 
   const toggleTorch = async () => {
     if (!scannerRef.current) return;
-    if (torchOn) {
-      await scannerRef.current.turnFlashOff();
-    } else {
-      await scannerRef.current.turnFlashOn();
+    try {
+      if (torchOn) {
+        await scannerRef.current.turnFlashOff();
+      } else {
+        await scannerRef.current.turnFlashOn();
+      }
+      setTorchOn((v) => !v);
+    } catch {
+      // Torch control is best-effort; some devices report flash then refuse it.
+      setTorchAvailable(false);
     }
-    setTorchOn(!torchOn);
   };
 
   return (
@@ -127,7 +151,7 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
       {error && <p className="error-text">{error}</p>}
       <div className="qr-scanner-actions">
         {torchAvailable && (
-          <button type="button" onClick={toggleTorch}>
+          <button type="button" onClick={() => void toggleTorch()}>
             {torchOn ? 'Torch off' : 'Torch on'}
           </button>
         )}
@@ -140,8 +164,9 @@ export function QrScannerView({ onDecode, paused = false, helperText }: QrScanne
           className="qr-manual-entry"
           onSubmit={(e) => {
             e.preventDefault();
-            if (manualEntry.trim()) {
-              emitDecode(manualEntry.trim());
+            const value = manualEntry.trim();
+            if (value) {
+              void handleValue(value);
               setManualEntry('');
             }
           }}
