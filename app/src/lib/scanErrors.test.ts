@@ -12,7 +12,7 @@ describe('friendlyScanError - real server strings map to picker-friendly text', 
       'This hole is on the Hyperlocal wall. Use a LMS hole for this shipment.',
       'LMS',
     );
-    expect(msg).toBe('Wrong wall - please scan an empty hole on the LMS wall.');
+    expect(msg).toBe('Wrong wall - please go to the LMS wall.');
   });
 
   it('tells a Hyperlocal picker which wall to use', () => {

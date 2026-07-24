@@ -2,8 +2,29 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { humanizePickerCreateError, validatePickerCreateInput } from '../lib/pickerAuth';
 import { supabase } from '../lib/supabaseClient';
 import { StatusPill } from '../components/StatusPill';
-import { pickerStatusMeta } from '../lib/status';
+import { pickerStatusMeta, orderStatusMeta } from '../lib/status';
 import { useToast } from '../lib/useToast';
+
+// Order the live-order pipeline reads left-to-right on the stats board.
+const ORDER_PIPELINE: string[] = [
+  'available',
+  'assigned',
+  'picking_in_progress',
+  'picked',
+  'arrived_at_warehouse',
+  'sorting_in_progress',
+  'dispatched',
+];
+const LIVE_STATUSES = new Set([
+  'available',
+  'assigned',
+  'picking_in_progress',
+  'picked',
+  'in_transit_to_warehouse',
+  'arrived_at_warehouse',
+  'sorting_in_progress',
+  'ready_for_dispatch',
+]);
 
 interface PickerRosterRow {
   id: string;
@@ -30,7 +51,8 @@ interface CreatedPicker {
 export function ManpowerPage() {
   const [pickers, setPickers] = useState<PickerRosterRow[]>([]);
   const [zones, setZones] = useState<{ code: string; label: string }[]>([]);
-  const { toast, notify } = useToast(6000);
+  const [orderStatuses, setOrderStatuses] = useState<string[]>([]);
+  const { toast, notify } = useToast();
   const [formError, setFormError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedPicker | null>(null);
   const [allZones, setAllZones] = useState(false);
@@ -56,13 +78,15 @@ export function ManpowerPage() {
   };
 
   const load = async () => {
-    const [roster, zoneRows] = await Promise.all([
+    const [roster, zoneRows, orderRows] = await Promise.all([
       supabase.rpc('admin_list_pickers_v1'),
       supabase.from('zones').select('code, label').eq('is_active', true).order('sort_order'),
+      supabase.from('orders').select('status'),
     ]);
     if (roster.error) notify(`Could not load picker roster: ${humanizePickerCreateError(roster.error.message)}`, 'error');
     else setPickers((roster.data as PickerRosterRow[] | null) ?? []);
     setZones((zoneRows.data as { code: string; label: string }[] | null) ?? []);
+    setOrderStatuses(((orderRows.data as { status: string }[] | null) ?? []).map((o) => o.status));
   };
 
   // Load once on mount. `load` is a stable per-render closure over supabase
@@ -149,6 +173,15 @@ export function ManpowerPage() {
     }
   };
 
+  const totalPickers = pickers.length;
+  // A suspended/offboarded picker is never counted as online.
+  const onlinePickers = pickers.filter((p) => p.is_online && p.status === 'active').length;
+  const totalLiveOrders = orderStatuses.filter((s) => LIVE_STATUSES.has(s)).length;
+  const statusCounts = orderStatuses.reduce<Record<string, number>>((acc, s) => {
+    acc[s] = (acc[s] ?? 0) + 1;
+    return acc;
+  }, {});
+
   return (
     <div className="admin-screen manpower-screen">
       {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
@@ -159,6 +192,30 @@ export function ManpowerPage() {
           <p>Create pickers, assign their zone coverage, and manage their operational access.</p>
         </div>
       </header>
+
+      <section className="ops-stats">
+        <div className="stat-tiles">
+          <div className="stat-tile">
+            <span className="stat-value">{totalPickers}</span>
+            <span className="stat-label">Total pickers</span>
+          </div>
+          <div className="stat-tile">
+            <span className="stat-value stat-online">{onlinePickers}</span>
+            <span className="stat-label">Online now</span>
+          </div>
+          <div className="stat-tile">
+            <span className="stat-value">{totalLiveOrders}</span>
+            <span className="stat-label">Live orders</span>
+          </div>
+        </div>
+        <div className="stat-pipeline">
+          {ORDER_PIPELINE.map((status) => (
+            <span key={status} className={`state-pill tone-${orderStatusMeta(status).tone}`}>
+              {orderStatusMeta(status).label}: <strong>{statusCounts[status] ?? 0}</strong>
+            </span>
+          ))}
+        </div>
+      </section>
 
       <section>
         <h2>Add picker</h2>
@@ -233,9 +290,15 @@ export function ManpowerPage() {
                     <td>{picker.all_zones ? 'All zones' : picker.home_zone ?? '—'}</td>
                     <td><StatusPill meta={pickerStatusMeta(picker.status)} /></td>
                     <td>
-                      <span className={`roster-online ${picker.is_online ? 'is-online' : ''}`}>
-                        {picker.is_online ? '● Online' : '○ Offline'}
-                      </span>
+                      {(() => {
+                        // Suspended/offboarded pickers are always shown offline.
+                        const online = picker.is_online && picker.status === 'active';
+                        return (
+                          <span className={`roster-online ${online ? 'is-online' : ''}`}>
+                            {online ? '● Online' : '○ Offline'}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="num">{picker.active_orders}</td>
                     <td>

@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabaseClient';
 import { QrScannerView } from '../components/QrScannerView';
 import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
+import { PullToRefresh } from '../components/PullToRefresh';
 import { CheckIcon, PinIcon, LogoutIcon } from '../components/icons';
 import type { Order } from '../types/database';
 import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
@@ -208,7 +209,15 @@ export function PickerPage() {
   // Sign-out is only offered on the home screen. Confirm first, then mark the
   // picker offline before ending the session so they don't linger "online" in
   // the roster / assignment engine after leaving.
+  // A picker mid-flow (picking, carrying picked-up bags, or still sorting) must
+  // not sign out and abandon physical work. Only offer sign-out when idle.
+  const hasActiveWork = inProgress.length > 0 || pickedUp.length > 0 || inSorting.length > 0;
+
   const handleSignOut = async () => {
+    if (hasActiveWork) {
+      notify('Finish and drop off your current orders before signing out.', 'error');
+      return;
+    }
     if (!window.confirm('Sign out of Dubai Mall Ops? You will be marked offline and stop receiving orders.')) {
       return;
     }
@@ -279,6 +288,7 @@ export function PickerPage() {
   // ---- Queue (Pending Pickup) --------------------------------------------
   if (screen.name === 'queue') {
     return (
+      <PullToRefresh onRefresh={refetch}>
       <div
         className="picker-screen"
         ref={screenRef}
@@ -289,6 +299,7 @@ export function PickerPage() {
           busy={onlineToggleBusy}
           onToggleOnline={() => void toggleOnline()}
           onSignOut={() => void handleSignOut()}
+          signOutBlocked={hasActiveWork}
         />
 
         {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
@@ -360,6 +371,7 @@ export function PickerPage() {
           </>
         )}
       </div>
+      </PullToRefresh>
     );
   }
 
@@ -468,18 +480,32 @@ export function PickerPage() {
       <div className="picker-screen">
         <SheetHeader title="Sort into pigeon holes" onClose={() => setScreen({ name: 'queue' })} />
         <div className="order-list">
-          {inSorting.length === 0 && (
-            <div className="done-state fade-in">
-              <div className="success-checkmark">
-                <CheckIcon />
+          {/* "All sorted" only when the picker has NO active orders left at all
+              (everything assigned to them is dispatched). If they still have
+              orders to pick up or drop off, we don't claim they're done. */}
+          {inSorting.length === 0 &&
+            (myOrders.length === 0 ? (
+              <div className="done-state fade-in">
+                <div className="success-checkmark">
+                  <CheckIcon />
+                </div>
+                <h2>All sorted</h2>
+                <p className="sheet-sub">Every order assigned to you is in its pigeon hole. Nothing left to sort.</p>
+                <button type="button" className="dark-button done-state-cta" onClick={() => setScreen({ name: 'queue' })}>
+                  Pick more orders
+                </button>
               </div>
-              <h2>All sorted</h2>
-              <p className="sheet-sub">Every shipment is in its pigeon hole. Nothing left to sort.</p>
-              <button type="button" className="dark-button done-state-cta" onClick={() => setScreen({ name: 'queue' })}>
-                Pick more orders
-              </button>
-            </div>
-          )}
+            ) : (
+              <div className="done-state fade-in">
+                <h2>Nothing to sort right now</h2>
+                <p className="sheet-sub">
+                  You still have {myOrders.length} order{myOrders.length === 1 ? '' : 's'} to pick up or drop off. Head back to your queue.
+                </p>
+                <button type="button" className="dark-button done-state-cta" onClick={() => setScreen({ name: 'queue' })}>
+                  Back to queue
+                </button>
+              </div>
+            ))}
           {inSorting.map((o) =>
             holeMode === 'picker_chosen' ? (
               <ChooseHoleStep
@@ -551,11 +577,13 @@ function PickerHeader({
   busy,
   onToggleOnline,
   onSignOut,
+  signOutBlocked,
 }: {
   profile: ReturnType<typeof useAuth>['profile'];
   busy: boolean;
   onToggleOnline: () => void;
   onSignOut: () => void;
+  signOutBlocked: boolean;
 }) {
   const online = profile?.is_online ?? false;
   return (
@@ -573,12 +601,16 @@ function PickerHeader({
         {online ? 'Online' : 'Offline'}
         <span className="online-dot">{online ? <CheckIcon /> : null}</span>
       </button>
+      {/* Sign-out lives only on the home screen. It's disabled while the picker
+          has active work (in-progress / picked-up / still sorting) so they can't
+          abandon physical orders mid-flow. */}
       <button
         type="button"
-        className="icon-button picker-signout"
+        className={`icon-button picker-signout${signOutBlocked ? ' is-disabled' : ''}`}
         onClick={onSignOut}
+        aria-disabled={signOutBlocked}
         aria-label="Sign out"
-        title="Sign out"
+        title={signOutBlocked ? 'Finish and drop off your orders before signing out' : 'Sign out'}
       >
         <LogoutIcon />
       </button>

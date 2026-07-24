@@ -14,7 +14,7 @@ export interface Toast {
  * classes. Errors persist longer than successes since a missed failure on a
  * busy floor is costly.
  */
-export function useToast(defaultTimeoutMs = 4000) {
+export function useToast(defaultTimeoutMs = 3500) {
   const [toast, setToast] = useState<Toast | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
@@ -22,7 +22,9 @@ export function useToast(defaultTimeoutMs = 4000) {
     (text: string, variant: ToastVariant = 'info') => {
       setToast({ text, variant });
       window.clearTimeout(timer.current);
-      const ms = variant === 'error' ? Math.max(defaultTimeoutMs, 6000) : defaultTimeoutMs;
+      // Every message stays long enough to read but never lingers: errors get a
+      // touch longer, and nothing exceeds ~4s (capped).
+      const ms = variant === 'error' ? 4000 : Math.min(Math.max(defaultTimeoutMs, 2500), 4000);
       timer.current = window.setTimeout(() => setToast(null), ms);
     },
     [defaultTimeoutMs],
