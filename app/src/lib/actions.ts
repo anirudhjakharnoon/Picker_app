@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient';
+import { withTimeout } from './rpcTimeout';
 
 export type ActionType =
   | 'accept_order'
@@ -7,6 +8,7 @@ export type ActionType =
   | 'scan_pigeon_hole'
   | 'scan_bag_into_pigeon_hole'
   | 'scan_bag_into_chosen_hole'
+  | 'scan_bag_into_held_hole'
   | 'record_warehouse_arrival'
   | 'record_warehouse_arrival_picker_chosen';
 
@@ -35,9 +37,15 @@ export async function submitAction(
   buildPayload: (clientEventId: string) => Record<string, unknown>,
 ): Promise<ActionResult> {
   const localId = crypto.randomUUID();
-  const { data, error } = await supabase.rpc(rpcNameFor(type), buildPayload(localId));
-  if (error) return { localId, ok: false, error: error.message };
-  return { localId, ok: true, data };
+  try {
+    // Race against a timeout so a hung request never leaves the scanner awaiting
+    // forever (server-side idempotency makes a retry safe).
+    const { data, error } = await withTimeout(supabase.rpc(rpcNameFor(type), buildPayload(localId)));
+    if (error) return { localId, ok: false, error: error.message };
+    return { localId, ok: true, data };
+  } catch (err) {
+    return { localId, ok: false, error: err instanceof Error ? err.message : 'Request failed. Please try again.' };
+  }
 }
 
 function rpcNameFor(type: ActionType): string {
@@ -54,6 +62,8 @@ function rpcNameFor(type: ActionType): string {
       return 'scan_bag_into_pigeon_hole_v1';
     case 'scan_bag_into_chosen_hole':
       return 'scan_bag_into_chosen_hole_v1';
+    case 'scan_bag_into_held_hole':
+      return 'scan_bag_into_held_hole_v1';
     case 'record_warehouse_arrival':
       return 'record_warehouse_arrival_v1';
     case 'record_warehouse_arrival_picker_chosen':

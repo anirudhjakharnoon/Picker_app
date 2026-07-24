@@ -2081,6 +2081,59 @@ section {
   box-shadow: var(--shadow-surface);
 }
 
+/* Picker-chosen sequential sort steps. */
+.sort-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.sort-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--color-brand);
+  border-radius: 0.85rem;
+  background: var(--color-brand-tint);
+  color: var(--color-brand-deep);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.sort-step-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--color-heading);
+}
+
+.sort-step small {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.sort-step.is-locked {
+  border-color: var(--color-border);
+  background: var(--color-surface-subtle);
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.sort-step.is-locked .sort-step-title {
+  color: var(--color-text-muted);
+}
+
+.sort-step-lock {
+  position: absolute;
+  top: 0.9rem;
+  right: 1rem;
+  font-size: 0.95rem;
+}
+
 .sorting-order-header {
   display: flex;
   flex-wrap: wrap;

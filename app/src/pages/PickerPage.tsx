@@ -16,6 +16,7 @@ import { orderStatusMeta } from '../lib/status';
 import { useToast, type Toast, type ToastVariant } from '../lib/useToast';
 import { friendlyScanError } from '../lib/scanErrors';
 import { alertNewOrder, primeAudio, requestNotificationPermission } from '../lib/alerts';
+import { withTimeout } from '../lib/rpcTimeout';
 
 type Screen =
   | { name: 'queue' }
@@ -25,7 +26,7 @@ type Screen =
   | { name: 'scan-gate' }
   | { name: 'sorting' }
   | { name: 'drop-into-hole'; orderId: string; holeId: string; holeNumber: string }
-  | { name: 'choose-hole'; orderId: string };
+  | { name: 'choose-hole' };
 
 type QueueTab = 'pending' | 'in_progress' | 'picked_up';
 
@@ -136,12 +137,17 @@ export function PickerPage() {
 
   const storeNameFor = (o: Order) => storeNames[o.store_id] ?? 'Store';
 
+  // An order is the picker's ACTIVE work only until they finish sorting it.
+  // Once sorted it becomes 'ready_for_dispatch' - the warehouse's concern, not
+  // the picker's - so it is released here just like dispatched/completed. This
+  // is what lets the "all sorted" screen appear and frees the picker's capacity
+  // for the next order (matches picker_active_order_count_v1 on the server).
   const myOrders = useMemo(
     () =>
       orders.filter(
         (o) =>
           o.assigned_picker_id === profile?.id &&
-          !['dispatched', 'completed', 'cancelled'].includes(o.status)
+          !['ready_for_dispatch', 'dispatched', 'completed', 'cancelled'].includes(o.status)
       ),
     [orders, profile?.id]
   );
@@ -506,33 +512,31 @@ export function PickerPage() {
                 </button>
               </div>
             ))}
-          {inSorting.map((o) =>
-            holeMode === 'picker_chosen' ? (
-              <ChooseHoleStep
-                key={o.id}
-                order={o}
-                onChooseHole={() => setScreen({ name: 'choose-hole', orderId: o.id })}
-              />
+          {inSorting.length > 0 &&
+            (holeMode === 'picker_chosen' ? (
+              // Picker-chosen: the picker decides which order goes in which hole,
+              // so we show generic sequential steps (one per order still to
+              // sort) rather than naming orders. Only the first is actionable.
+              <SortStepList count={inSorting.length} onStart={() => setScreen({ name: 'choose-hole' })} />
             ) : (
-              <SortingOrderStep
-                key={o.id}
-                order={o}
-                onOpenHole={(holeId, holeNumber) =>
-                  setScreen({ name: 'drop-into-hole', orderId: o.id, holeId, holeNumber })
-                }
-              />
-            ),
-          )}
+              inSorting.map((o) => (
+                <SortingOrderStep
+                  key={o.id}
+                  order={o}
+                  onOpenHole={(holeId, holeNumber) =>
+                    setScreen({ name: 'drop-into-hole', orderId: o.id, holeId, holeNumber })
+                  }
+                />
+              ))
+            ))}
         </div>
       </div>
     );
   }
 
   if (screen.name === 'choose-hole') {
-    const order = orders.find((o) => o.id === screen.orderId);
     return (
       <ChooseHoleAndDropFlow
-        order={order}
         onDone={async () => {
           await refetch();
           setScreen({ name: 'sorting' });
@@ -1092,33 +1096,40 @@ function SortingOrderStep({
   );
 }
 
-// Picker-chosen mode: no hole is pre-assigned, so the sort card just launches
-// the "scan a hole, then scan bags into it" flow.
-function ChooseHoleStep({
-  order,
-  onChooseHole,
-}: {
-  order: Order;
-  onChooseHole: () => void;
-}) {
-  const started = order.pigeon_hole_id != null;
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
+}
+
+// Picker-chosen sorting: the picker decides which order goes in which hole, so
+// we don't name orders. We show one sequential step per order still to sort;
+// only the first is actionable, the rest stay locked until earlier steps are
+// done (they simply disappear as each order is sorted, since `count` drops).
+function SortStepList({ count, onStart }: { count: number; onStart: () => void }) {
   return (
-    <article className="sorting-order-card">
-      <div className="sorting-order-header">
-        <span className="order-number">{order.external_order_ref}</span>
-        <DeliveryBadge order={order} />
-        <span className="sorting-total">Dropped {order.bag_count_scanned_sort}/{order.bag_count_expected} bags</span>
-      </div>
-      <button type="button" className="sorting-current-hole" onClick={onChooseHole}>
-        <span>{started ? 'Continue placing bags' : 'Choose a pigeon hole'}</span>
-        <strong>{started ? 'Re-scan your hole' : 'Scan any free hole'}</strong>
-        <small>
-          {started
-            ? 'All bags for this shipment go in the same hole.'
-            : 'The hole locks to this shipment on the first bag.'}
-        </small>
-      </button>
-    </article>
+    <div className="sort-steps">
+      {Array.from({ length: count }, (_, i) => {
+        const active = i === 0;
+        return (
+          <button
+            key={i}
+            type="button"
+            className={`sort-step${active ? '' : ' is-locked'}`}
+            onClick={active ? onStart : undefined}
+            aria-disabled={!active}
+          >
+            <span className="sort-step-title">Scan a hole to place {ordinal(i + 1)} order</span>
+            <small>
+              {active
+                ? 'Scan any empty hole, then scan that order’s bag(s).'
+                : 'Locked until the previous order is sorted.'}
+            </small>
+            {!active && <span className="sort-step-lock" aria-hidden="true">🔒</span>}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1319,16 +1330,16 @@ function DropIntoHoleFlow({
 
 type ChooseHolePhase = 'scan-hole' | 'hole-held' | 'scan-bag' | 'bag-collected' | 'complete';
 
-// Picker-chosen sorting: scan any free hole to hold it, then scan bag(s). The
-// first bag links the hole to this shipment (server-enforced); only this
-// shipment's bags may go in it. Works in both bag-scan modes.
+// Picker-chosen sorting (order-agnostic). The picker scans ANY free hole to
+// hold it, then scans a bag; the BAG identifies which order this is (there is
+// no pre-allocation of order -> hole). The first bag links the hole to that
+// order and the delivery-mode wall gate is enforced then. Works in both
+// bag-scan modes.
 function ChooseHoleAndDropFlow({
-  order,
   onDone,
   notify,
   toast,
 }: {
-  order: Order | undefined;
   onDone: () => Promise<void>;
   notify: (msg: string, variant?: ToastVariant) => void;
   toast: Toast | null;
@@ -1338,32 +1349,26 @@ function ChooseHoleAndDropFlow({
   const [phase, setPhase] = useState<ChooseHolePhase>('scan-hole');
   const [hole, setHole] = useState<{ id: string; number: string; qr: string } | null>(null);
   const [dropped, setDropped] = useState(0);
-  const [expected, setExpected] = useState(order?.bag_count_expected ?? 0);
+  // Unknown until the first bag scan reveals which order (and its bag count).
+  const [expected, setExpected] = useState(0);
+  const [orderRef, setOrderRef] = useState<string | null>(null);
   const placedRef = useRef(false);
 
   const closeFlow = () => {
     // Free the hold if no bag was placed yet, so an abandoned hole doesn't stay
-    // locked. A hole already linked to a shipment is untouched by this call.
+    // locked. A hole already linked to an order is untouched by this call.
     if (!placedRef.current) void supabase.rpc('release_held_hole_v1');
     void onDone();
   };
 
-  if (!order) {
-    return (
-      <FullscreenSheet onClose={() => void onDone()} toast={toast}>
-        <div className="empty-state">This shipment is no longer available.</div>
-      </FullscreenSheet>
-    );
-  }
-
   const claimHole = async (value: string) => {
     try {
-      const { data, error } = await supabase.rpc('claim_pigeon_hole_v1', {
-        p_hole_qr_value: value,
-        p_order_id: order.id,
-      });
+      // No order id: the hole is just held; the bag will decide the order.
+      const { data, error } = await withTimeout(
+        supabase.rpc('claim_pigeon_hole_v1', { p_hole_qr_value: value }),
+      );
       if (error) {
-        notify(friendlyScanError('claim-hole', error.message, order.delivery_mode), 'error');
+        notify(friendlyScanError('claim-hole', error.message), 'error');
         return;
       }
       const held = data as { hole_id?: string; hole_number?: string } | null;
@@ -1372,9 +1377,9 @@ function ChooseHoleAndDropFlow({
         return;
       }
       setHole({ id: held.hole_id, number: held.hole_number, qr: value });
-      // Move to a deliberate "hole on hold" screen. This unmounts the scanner
-      // between the hole scan and the bag scan so the still-visible hole QR
-      // can't be read again as a (rejected) bag scan.
+      // A deliberate "hole on hold" screen unmounts the scanner between the hole
+      // scan and the bag scan so the still-visible hole QR can't be read again
+      // as a (rejected) bag scan.
       setPhase('hole-held');
     } catch (err) {
       notify(err instanceof Error ? `Could not use this hole: ${err.message}` : 'Could not use this hole. Please try again.', 'error');
@@ -1384,26 +1389,34 @@ function ChooseHoleAndDropFlow({
   const placeBag = async (value: string) => {
     if (!hole) return;
     try {
-      const result = await submitAction('scan_bag_into_chosen_hole', (clientEventId) => ({
+      const result = await submitAction('scan_bag_into_held_hole', (clientEventId) => ({
         p_client_event_id: clientEventId,
-        p_order_id: order.id,
         p_bag_qr_value: value,
         p_pigeon_hole_qr_value: hole.qr,
         p_client_captured_at: new Date().toISOString(),
         p_device_id: navigator.userAgent.slice(0, 64),
       }));
       if (!result.ok) {
-        notify(friendlyScanError('chosen-bag', result.error, order.delivery_mode), 'error');
+        notify(friendlyScanError('chosen-bag', result.error), 'error');
+        // A wall mismatch before any bag has been placed means this hole is on
+        // the wrong wall for that order. Release it and send the picker back to
+        // scan a hole on the correct wall instead of leaving them stuck.
+        if (!placedRef.current && (result.error ?? '').toLowerCase().includes('wall')) {
+          void supabase.rpc('release_held_hole_v1');
+          setHole(null);
+          setPhase('scan-hole');
+        }
         return;
       }
       const placement = result.data as
-        | { dropped?: number; expected?: number; hole_complete?: boolean }
+        | { dropped?: number; expected?: number; hole_complete?: boolean; order_ref?: string }
         | undefined;
       if (!placement || typeof placement.dropped !== 'number' || typeof placement.expected !== 'number') {
         notify('Unexpected response from the server. Please try scanning that bag again.', 'error');
         return;
       }
       placedRef.current = true;
+      if (placement.order_ref) setOrderRef(placement.order_ref);
       setDropped(placement.dropped);
       setExpected(placement.expected);
       setPhase(placement.hole_complete ? 'complete' : 'bag-collected');
@@ -1422,7 +1435,7 @@ function ChooseHoleAndDropFlow({
         <div className="sheet-body center fade-in">
           <h2>You have placed Bag #{dropped}</h2>
           <p className="sheet-sub">
-            This shipment has {expected} bags · <strong>{remaining}</strong> remaining, all in hole {hole?.number}
+            This order has {expected} bags · <strong>{remaining}</strong> remaining, all in hole {hole?.number}
           </p>
           <BagsGrid total={expected} collected={dropped} />
         </div>
@@ -1445,8 +1458,8 @@ function ChooseHoleAndDropFlow({
           <h2>Hole {hole?.number} is on hold</h2>
           <p className="sheet-sub">
             {oneBag
-              ? `Scan any one bag to place this shipment in hole ${hole?.number}.`
-              : `Scan the ${expected} bags for this shipment into hole ${hole?.number}.`}
+              ? `Scan any one bag of the order you want to place in hole ${hole?.number}.`
+              : `Scan the bags of the order you want to place in hole ${hole?.number}.`}
           </p>
         </div>
         <div className="sheet-footer">
@@ -1470,7 +1483,7 @@ function ChooseHoleAndDropFlow({
             {oneBag ? (
               <>Please ensure you have placed <strong>{expected}</strong> bags in hole {hole?.number}</>
             ) : (
-              'Shipment sorted and ready for dispatch.'
+              <>{orderRef ? `${orderRef} sorted` : 'Order sorted'} and ready for dispatch.</>
             )}
           </p>
           <BagsGrid total={expected} collected={expected} />
@@ -1492,18 +1505,16 @@ function ChooseHoleAndDropFlow({
   return (
     <FullscreenSheet onClose={closeFlow} toast={toast}>
       <div className="scan-heading fade-in">
-        <p className="scan-order">Sorting {order.external_order_ref}</p>
+        <p className="scan-order">Place an order in a pigeon hole</p>
         <h2 className="scan-title">
           {scanningBag ? `Scan a bag to place in ${hole?.number}` : 'Scan a pigeon hole'}
         </h2>
         <p className="scan-sub">
           {!scanningBag
-            ? 'Scan any empty hole to hold it for this shipment.'
-            : oneBag
-              ? `Scanning one bag places the whole shipment in hole ${hole?.number}.`
-              : `All ${expected} bags for this shipment go in hole ${hole?.number}.`}
+            ? 'Scan any empty hole to hold it, then scan the order you want to place there.'
+            : `Scan the bag(s) of the order you are placing in hole ${hole?.number}. The first bag locks that order to this hole.`}
         </p>
-        {scanningBag && (
+        {scanningBag && expected > 0 && (
           <p className="scan-counts">
             <strong>{dropped}</strong> placed · <strong>{Math.max(expected - dropped, 0)}</strong> remaining
           </p>
