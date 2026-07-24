@@ -203,45 +203,68 @@ export function ManpowerPage() {
       </section>
 
       <section className="manpower-roster">
-        <h2>Picker roster</h2>
-        {pickers.length === 0 && <p className="empty-state">No pickers created yet.</p>}
-        {pickers.map((picker) => (
-          <div className="manpower-row" key={picker.id}>
-            <div>
-              <strong>{picker.picker_code_masked ?? 'PKR-••••'}</strong>
-              <span>{picker.full_name ?? 'Unnamed picker'}</span>
-              <small>{picker.phone_masked ?? 'Mobile hidden'} · {picker.all_zones ? 'All Zones' : picker.home_zone ?? 'No zone'}</small>
-            </div>
-            <div>
-              <StatusPill meta={pickerStatusMeta(picker.status)} />
-              <small>
-                <span className={`roster-online ${picker.is_online ? 'is-online' : ''}`}>
-                  {picker.is_online ? '● Online' : '○ Offline'}
-                </span>
-                {' · '}{picker.active_orders} active
-              </small>
-            </div>
-            <div className="manpower-actions">
-              {picker.status === 'active' && (
-                <button type="button" className="secondary-button" onClick={() => void updatePicker(picker, 'suspended')}>
-                  Suspend
-                </button>
-              )}
-              {picker.status === 'suspended' && (
-                <button type="button" onClick={() => void updatePicker(picker, 'active')}>
-                  Reactivate
-                </button>
-              )}
-              {picker.status !== 'offboarded' ? (
-                <button type="button" className="danger-button" onClick={() => void updatePicker(picker, 'offboarded')}>
-                  Offboard
-                </button>
-              ) : (
-                <span className="roster-terminal">Offboarded</span>
-              )}
-            </div>
+        <div className="roster-head">
+          <h2>Picker roster</h2>
+          <span className="roster-count">{pickers.length} picker{pickers.length === 1 ? '' : 's'}</span>
+        </div>
+        {pickers.length === 0 ? (
+          <p className="empty-state">No pickers created yet.</p>
+        ) : (
+          <div className="roster-table-wrap">
+            <table className="roster-table">
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Name</th>
+                  <th>Phone</th>
+                  <th>Zone</th>
+                  <th>Status</th>
+                  <th>Presence</th>
+                  <th className="num">Active</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pickers.map((picker) => (
+                  <tr key={picker.id}>
+                    <td className="mono">{picker.picker_code_masked ?? 'PKR-••••'}</td>
+                    <td>{picker.full_name ?? 'Unnamed picker'}</td>
+                    <td className="mono">{picker.phone_masked ?? '—'}</td>
+                    <td>{picker.all_zones ? 'All zones' : picker.home_zone ?? '—'}</td>
+                    <td><StatusPill meta={pickerStatusMeta(picker.status)} /></td>
+                    <td>
+                      <span className={`roster-online ${picker.is_online ? 'is-online' : ''}`}>
+                        {picker.is_online ? '● Online' : '○ Offline'}
+                      </span>
+                    </td>
+                    <td className="num">{picker.active_orders}</td>
+                    <td>
+                      <div className="roster-actions">
+                        {picker.status === 'active' && (
+                          <button type="button" className="secondary-button" onClick={() => void updatePicker(picker, 'suspended')}>
+                            Suspend
+                          </button>
+                        )}
+                        {picker.status === 'suspended' && (
+                          <button type="button" className="secondary-button" onClick={() => void updatePicker(picker, 'active')}>
+                            Reactivate
+                          </button>
+                        )}
+                        {picker.status !== 'offboarded' ? (
+                          <button type="button" className="danger-button" onClick={() => void updatePicker(picker, 'offboarded')}>
+                            Offboard
+                          </button>
+                        ) : (
+                          <span className="roster-terminal">Offboarded</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ))}
+        )}
       </section>
 
       {created && (

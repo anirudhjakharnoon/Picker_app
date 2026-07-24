@@ -14,6 +14,7 @@ import { StatusPill } from '../components/StatusPill';
 import { orderStatusMeta } from '../lib/status';
 import { useToast, type Toast, type ToastVariant } from '../lib/useToast';
 import { friendlyScanError } from '../lib/scanErrors';
+import { alertNewOrder, primeAudio, requestNotificationPermission } from '../lib/alerts';
 
 type Screen =
   | { name: 'queue' }
@@ -184,6 +185,13 @@ export function PickerPage() {
       return;
     }
 
+    // Going online is a user gesture — use it to unlock the new-order chime and
+    // ask for notification permission so the picker gets alerted for new work.
+    if (goingOnline) {
+      primeAudio();
+      void requestNotificationPermission();
+    }
+
     setOnlineToggleBusy(true);
     patchProfile({ is_online: goingOnline });
     const { error } = await supabase.rpc('set_picker_status_v1', { p_is_online: goingOnline });
@@ -197,6 +205,21 @@ export function PickerPage() {
     void refreshProfile();
   };
 
+  // Sign-out is only offered on the home screen. Confirm first, then mark the
+  // picker offline before ending the session so they don't linger "online" in
+  // the roster / assignment engine after leaving.
+  const handleSignOut = async () => {
+    if (!window.confirm('Sign out of Dubai Mall Ops? You will be marked offline and stop receiving orders.')) {
+      return;
+    }
+    try {
+      await supabase.rpc('set_picker_status_v1', { p_is_online: false });
+    } catch {
+      // Even if the offline call fails, still sign out.
+    }
+    await signOut();
+  };
+
   // Auto-focus the In progress tab only when work FIRST appears (a rising
   // edge), not on every render where work exists - otherwise a picker who taps
   // another tab is yanked back to In progress on the next data refresh.
@@ -205,6 +228,25 @@ export function PickerPage() {
     if (inProgress.length > 0 && !hadInProgress.current) setActiveTab('in_progress');
     hadInProgress.current = inProgress.length > 0;
   }, [inProgress.length]);
+
+  // Ring + notify when a NEW order lands in the picker's queue. Seed the set of
+  // known order ids on first run so we never alert for orders that were already
+  // there when the screen opened - only genuinely new assignments chime.
+  const knownOrderIds = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const currentIds = new Set(myOrders.map((o) => o.id));
+    if (knownOrderIds.current === null) {
+      knownOrderIds.current = currentIds;
+      return;
+    }
+    const fresh = myOrders.filter((o) => !knownOrderIds.current!.has(o.id));
+    knownOrderIds.current = currentIds;
+    if (fresh.length > 0) {
+      const first = fresh[0];
+      const label = fresh.length === 1 ? first.external_order_ref : `${fresh.length} new orders`;
+      alertNewOrder('New order assigned', `${label} - ${first.bag_count_expected} bag(s) to pick up`);
+    }
+  }, [myOrders]);
 
   const acceptOrder = async (order: Order) => {
     const result = await submitAction('accept_order', () => ({ p_order_id: order.id }));
@@ -246,7 +288,7 @@ export function PickerPage() {
           profile={profile}
           busy={onlineToggleBusy}
           onToggleOnline={() => void toggleOnline()}
-          onSignOut={() => void signOut()}
+          onSignOut={() => void handleSignOut()}
         />
 
         {toast && <div className={`toast is-${toast.variant}`} role="alert">{toast.text}</div>}
@@ -433,6 +475,9 @@ export function PickerPage() {
               </div>
               <h2>All sorted</h2>
               <p className="sheet-sub">Every shipment is in its pigeon hole. Nothing left to sort.</p>
+              <button type="button" className="dark-button done-state-cta" onClick={() => setScreen({ name: 'queue' })}>
+                Pick more orders
+              </button>
             </div>
           )}
           {inSorting.map((o) =>
