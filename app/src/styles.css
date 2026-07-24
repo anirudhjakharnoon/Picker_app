@@ -1195,15 +1195,37 @@ section {
 
 .success-checkmark {
   display: grid;
-  width: 120px;
-  height: 120px;
+  width: 104px;
+  height: 104px;
   place-items: center;
   border: 2px solid var(--color-success);
   border-radius: 50%;
   background: var(--color-success-tint);
   color: var(--color-success);
-  font-size: 5rem;
-  font-weight: 800;
+}
+
+.success-checkmark svg {
+  width: 52px;
+  height: 52px;
+}
+
+/* Celebratory "you're done" block (e.g. every shipment sorted). Mirrors the
+   scan success screens so completion feels consistent across the app. */
+.done-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 2.5rem 1rem;
+  text-align: center;
+}
+
+.done-state h2 {
+  margin: 0.4rem 0 0;
+}
+
+.done-state .sheet-sub {
+  max-width: 22rem;
 }
 
 /* --- Sort Wall panel --- */
@@ -1614,9 +1636,13 @@ section {
 .order-number {
   flex: 1;
   color: var(--color-brand);
-  font-size: 1.25rem;
+  font-size: 1.15rem;
   font-weight: 800;
   letter-spacing: 0.01em;
+  /* The shipment reference must never wrap mid-code into a 2-3 line stack.
+     Keeping it on one line lets the status/delivery pills wrap beside it
+     instead (the header already wraps on small screens). */
+  white-space: nowrap;
 }
 
 .state-pill {
@@ -1854,9 +1880,18 @@ section {
 
 .sorting-order-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.35rem 0.75rem;
+}
+
+/* Give the (long) shipment reference its own line so it can't be crushed into
+   a 3-line stack next to the delivery badge and the dropped count. The badge
+   and the count then share the second line, split left/right. */
+.sorting-order-header .order-number {
+  flex: 1 0 100%;
+  font-size: 1.1rem;
 }
 
 .sorting-total {
@@ -2174,16 +2209,6 @@ section {
   width: 20px;
   min-height: 20px;
   height: 20px;
-}
-
-/* success checkmark now wraps an icon */
-.success-checkmark {
-  font-size: 0;
-}
-
-.success-checkmark svg {
-  width: 56px;
-  height: 56px;
 }
 
 /* --- Fullscreen scanner sheet ---
