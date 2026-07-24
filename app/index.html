@@ -3,9 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/pwa-192.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <meta name="theme-color" content="#222223" />
+    <!-- Installable standalone app. The Apple-specific tags are what make iOS
+         "Add to Home Screen" launch full-screen instead of reopening Safari. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="DM Ops" />
+    <meta name="application-name" content="DM Ops" />
     <meta
       name="description"
       content="Dubai Mall Online delivery operations - picker and sort wall app for pickers, warehouse staff, and ops. Requires an active network connection."

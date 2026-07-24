@@ -427,7 +427,13 @@ export function PickerPage() {
         <SheetHeader title="Sort into pigeon holes" onClose={() => setScreen({ name: 'queue' })} />
         <div className="order-list">
           {inSorting.length === 0 && (
-            <div className="empty-state">Nothing left to sort. Great work!</div>
+            <div className="done-state fade-in">
+              <div className="success-checkmark">
+                <CheckIcon />
+              </div>
+              <h2>All sorted</h2>
+              <p className="sheet-sub">Every shipment is in its pigeon hole. Nothing left to sort.</p>
+            </div>
           )}
           {inSorting.map((o) =>
             holeMode === 'picker_chosen' ? (
@@ -821,7 +827,12 @@ function PickupFlow({
   return (
     <FullscreenSheet onClose={onClose} toast={toast}>
       <div className="sheet-body center fade-in">
-        <h2>{oneBag ? 'Confirm your bags' : 'You have collected all the bags!'}</h2>
+        {!oneBag && (
+          <div className="success-checkmark">
+            <CheckIcon />
+          </div>
+        )}
+        <h2>{oneBag ? 'Confirm your bags' : 'All bags collected'}</h2>
         <p className="sheet-sub">
           {oneBag ? (
             <>Please ensure you have picked up <strong>{expected}</strong> bags</>
