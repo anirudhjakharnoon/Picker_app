@@ -103,8 +103,8 @@ describe('parent <-> scanner: retry after wrong scan', () => {
 // path the camera and the manual-entry fallback both feed).
 describe('bag-scan journeys', () => {
   it('multi-bag: accepts each distinct bag exactly once, in order', async () => {
-    const scanned = [];
-    const onDecode = async (v) => {
+    const scanned: string[] = [];
+    const onDecode = async (v: string) => {
       await Promise.resolve();
       scanned.push(v);
     };
