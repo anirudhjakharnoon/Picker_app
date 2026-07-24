@@ -98,3 +98,42 @@ describe('parent <-> scanner: retry after wrong scan', () => {
     cleanup();
   });
 });
+
+// Models the two bag-scan journeys at the scanner->handler layer (the same
+// path the camera and the manual-entry fallback both feed).
+describe('bag-scan journeys', () => {
+  it('multi-bag: accepts each distinct bag exactly once, in order', async () => {
+    const scanned = [];
+    const onDecode = async (v) => {
+      await Promise.resolve();
+      scanned.push(v);
+    };
+    render(<QrScannerView onDecode={onDecode} />);
+
+    // Each bag decodes for a few frames while it sits in front of the camera.
+    for (const bag of ['BAG-1', 'BAG-2', 'BAG-3', 'BAG-4', 'BAG-5']) {
+      await frame(bag);
+      await frame(bag); // duplicate frames of the same bag must NOT double-count
+    }
+
+    expect(scanned).toEqual(['BAG-1', 'BAG-2', 'BAG-3', 'BAG-4', 'BAG-5']);
+    cleanup();
+  });
+
+  it('single-bag: one physical bag confirms the shipment once', async () => {
+    let confirms = 0;
+    const onDecode = async () => {
+      await Promise.resolve();
+      confirms += 1;
+    };
+    render(<QrScannerView onDecode={onDecode} />);
+
+    // The one bag lingers in frame for several decode frames.
+    await frame('THE-ONE-BAG');
+    await frame('THE-ONE-BAG');
+    await frame('THE-ONE-BAG');
+
+    expect(confirms).toBe(1);
+    cleanup();
+  });
+});

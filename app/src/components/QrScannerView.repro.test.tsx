@@ -55,6 +55,20 @@ async function frame(value: string) {
   });
 }
 
+describe('QrScannerView - iOS camera element setup', () => {
+  it('forces the muted property + inline attributes so iOS renders the stream', () => {
+    const { container } = render(<QrScannerView onDecode={() => {}} />);
+    const video = container.querySelector('video');
+    expect(video).not.toBeNull();
+    // React's JSX `muted` attribute does not reliably set the property; the
+    // component must set it on the DOM node or iOS shows a black camera.
+    expect(video.muted).toBe(true);
+    expect(video.hasAttribute('playsinline')).toBe(true);
+    expect(video.hasAttribute('autoplay')).toBe(true);
+    cleanup();
+  });
+});
+
 describe('QrScannerView - retry after a wrong scan', () => {
   it('processes a correct code after a wrong code (no stuck lock)', async () => {
     const seen: string[] = [];
