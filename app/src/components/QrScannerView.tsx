@@ -27,6 +27,12 @@ interface QrScannerViewProps {
 // correcting a mis-scan - the exact retry the user needs - is instant.
 const SAME_VALUE_COOLDOWN_MS = 1200;
 
+// Safety net: if a decode handler (an awaited RPC) never settles - a hung or
+// timed-out request - re-arm the scanner anyway so the camera never stays
+// frozen and the picker can simply scan again. This is what makes "the camera
+// only scans once then stops" impossible, independent of the network.
+const PROCESSING_WATCHDOG_MS = 13000;
+
 /**
  * Thin wrapper around the `qr-scanner` library (MIT-licensed, no paid API,
  * runs entirely in the browser via getUserMedia - docs Section 19.6/10.6).
@@ -79,11 +85,24 @@ export function QrScannerView({ onDecode, helperText }: QrScannerViewProps) {
 
     processingRef.current = true;
     lastValueRef.current = { value, at: now };
+    setError(null); // clear any prior "took too long" notice on a fresh accept
+
+    let settled = false;
+    const watchdog = window.setTimeout(() => {
+      if (settled) return;
+      // The handler is hung (e.g. an RPC that never returned). Re-arm so the
+      // next scan works, and tell the picker to try again.
+      processingRef.current = false;
+      setError('That scan is taking too long. Please try again.');
+    }, PROCESSING_WATCHDOG_MS);
+
     try {
       await onDecodeRef.current(value);
     } finally {
       // Stamp completion time (covers a slow RPC) and always re-arm. This
-      // `finally` is the single guarantee that the scanner can never wedge.
+      // `finally` plus the watchdog above guarantee the scanner can never wedge.
+      settled = true;
+      window.clearTimeout(watchdog);
       lastValueRef.current = { value, at: Date.now() };
       processingRef.current = false;
     }

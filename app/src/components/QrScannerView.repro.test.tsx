@@ -55,6 +55,40 @@ async function frame(value: string) {
   });
 }
 
+describe('QrScannerView - watchdog re-arms after a hung handler', () => {
+  it('does not stay stuck if a decode handler never settles', async () => {
+    vi.useFakeTimers();
+    const seen: string[] = [];
+    const onDecode = (v: string) => {
+      seen.push(v);
+      // Simulate a hung RPC: the first scan's promise never resolves.
+      return v === 'HANG' ? new Promise<void>(() => {}) : Promise.resolve();
+    };
+    render(<QrScannerView onDecode={onDecode} />);
+
+    // First scan hangs and locks the scanner.
+    act(() => decodeCb?.({ data: 'HANG' }));
+    expect(seen).toEqual(['HANG']);
+
+    // While hung, a different code is ignored (one decode at a time).
+    act(() => decodeCb?.({ data: 'NEXT' }));
+    expect(seen).toEqual(['HANG']);
+
+    // After the watchdog fires, the scanner re-arms and the next code works.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(13001);
+    });
+    await act(async () => {
+      decodeCb?.({ data: 'NEXT' });
+      await Promise.resolve();
+    });
+    expect(seen).toContain('NEXT');
+
+    vi.useRealTimers();
+    cleanup();
+  });
+});
+
 describe('QrScannerView - iOS camera element setup', () => {
   it('forces the muted property + inline attributes so iOS renders the stream', () => {
     const { container } = render(<QrScannerView onDecode={() => {}} />);
