@@ -69,6 +69,11 @@ body,
   min-height: 100vh;
   background: var(--color-bg);
   color: var(--color-text);
+  /* Keep iOS from auto-inflating text and from rubber-band scrolling the
+     whole app; this is a fixed-layout operational tool, not a document. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior: none;
 }
 
 body {
@@ -77,6 +82,12 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* `manipulation` disables the double-tap-to-zoom gesture (and its 300ms
+     delay). Pinch-zoom is separately locked via the viewport meta. Elements
+     that need their own gesture (the accept swipe) set their own touch-action,
+     which takes precedence over this ancestor value. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 button,

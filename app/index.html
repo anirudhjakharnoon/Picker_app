@@ -5,16 +5,22 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Lock zoom: this is an operational scanning app, not a document. In the
+         installed standalone PWA iOS honours maximum-scale/user-scalable, so
+         pinch-zoom and the jump-zoom-on-input-focus are both suppressed. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <meta name="theme-color" content="#222223" />
-    <!-- Installable standalone app. The Apple-specific tags are what make iOS
-         "Add to Home Screen" launch full-screen instead of reopening Safari. -->
+    <!-- Installable standalone app. On iOS 15 (which does NOT honor the web
+         manifest's display:standalone - that needs iOS 16.4+), the legacy
+         apple-mobile-web-app-capable meta is what makes "Add to Home Screen"
+         launch full-screen instead of reopening Safari. "default" keeps an
+         opaque status bar so the clock/battery never overlap app content. -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="DM Ops" />
     <meta name="application-name" content="DM Ops" />
     <meta

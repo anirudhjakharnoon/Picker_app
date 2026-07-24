@@ -97,13 +97,28 @@ export function QrScannerView({ onDecode, helperText }: QrScannerViewProps) {
       return;
     }
 
+    const video = videoRef.current;
+    // iOS Safari will only play a camera stream INLINE and without a user
+    // gesture when the element is genuinely muted + playsinline. React's JSX
+    // `muted` attribute does NOT reliably set the underlying muted PROPERTY, so
+    // an un-muted element leaves the camera a solid black rectangle on iOS.
+    // Force the property and the inline attributes on the real DOM node.
+    video.muted = true;
+    video.defaultMuted = true;
+    video.setAttribute('muted', '');
+    video.setAttribute('playsinline', '');
+    video.setAttribute('autoplay', '');
+
     const scanner = new QrScanner(
-      videoRef.current,
+      video,
       (result) => void handleValue(typeof result === 'string' ? result : result.data),
       {
         highlightScanRegion: true,
         highlightCodeOutline: true,
         maxScansPerSecond: 5,
+        // Pickers scan with the rear camera; be explicit so iOS doesn't pick
+        // the front one (which also reads as a black/unhelpful preview).
+        preferredCamera: 'environment',
       },
     );
     scannerRef.current = scanner;
@@ -145,7 +160,7 @@ export function QrScannerView({ onDecode, helperText }: QrScannerViewProps) {
   return (
     <div className="qr-scanner">
       <div className="qr-scanner-video-wrap">
-        <video ref={videoRef} muted playsInline />
+        <video ref={videoRef} muted autoPlay playsInline disablePictureInPicture />
       </div>
       {helperText && <p className="qr-scanner-helper">{helperText}</p>}
       {error && <p className="error-text">{error}</p>}
