@@ -752,35 +752,114 @@ section {
   text-transform: capitalize;
 }
 
-.manpower-roster {
-  display: grid;
-  gap: 0.65rem;
+/* Manpower is a single-column page (form, then a full-width roster) - override
+   the two-column .admin-screen grid so the roster is never squeezed. */
+.admin-screen.manpower-screen {
+  display: flex;
+  flex-direction: column;
 }
 
-.manpower-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 0.8rem;
-  align-items: center;
-  padding: 0.85rem;
+.manpower-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.roster-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.roster-head h2 {
+  margin: 0;
+}
+
+.roster-count {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+/* Excel-like roster: dense, scannable, sticky header, scrolls both ways so a
+   50-60 picker list stays readable. */
+.roster-table-wrap {
+  max-height: 70vh;
+  overflow: auto;
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: 0.7rem;
   background: var(--color-surface);
 }
 
-.manpower-row > div {
-  display: flex;
-  flex-direction: column;
-  gap: 0.18rem;
+.roster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
 }
 
-.manpower-row strong {
-  color: var(--color-heading);
+.roster-table th,
+.roster-table td {
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-border);
 }
 
-.manpower-row small {
+.roster-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface-subtle);
   color: var(--color-text-muted);
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.roster-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--color-surface-subtle) 45%, transparent);
+}
+
+.roster-table tbody tr:hover {
+  background: var(--color-brand-tint);
+}
+
+.roster-table td.mono {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.roster-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.roster-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.roster-actions button {
+  min-height: 32px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+}
+
+.manpower-created p {
+  margin: 0;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.manpower-created strong {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  background: var(--color-surface-subtle);
+  color: var(--color-heading);
 }
 
 .manpower-created p {
@@ -1237,6 +1316,21 @@ section {
 
 .done-state .sheet-sub {
   max-width: 22rem;
+}
+
+.done-state-cta {
+  margin-top: 1rem;
+  min-width: 12rem;
+}
+
+/* Suspended / offboarded picker block screen. */
+.blocked-card {
+  text-align: center;
+}
+
+.blocked-card button {
+  margin-top: 1.25rem;
+  width: 100%;
 }
 
 /* --- Sort Wall panel --- */

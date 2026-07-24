@@ -6,6 +6,7 @@ import { LoginPage } from './pages/LoginPage';
 import { PickerPage } from './pages/PickerPage';
 import { SortWallPage } from './pages/SortWallPage';
 import { AdminPage } from './pages/AdminPage';
+import { TestingPage } from './pages/TestingPage';
 import { ManpowerPage } from './pages/ManpowerPage';
 import { AppMenu } from './components/AppMenu';
 import type { UserRole } from './types/database';
@@ -19,6 +20,7 @@ const TAB_ACCESS: Record<string, UserRole[]> = {
   '/sort-wall': ['warehouse_staff', 'ops_manager', 'admin'],
   '/admin': ['admin'],
   '/manpower': ['admin'],
+  '/testing': ['admin'],
 };
 
 function defaultRouteFor(role: UserRole): string {
@@ -28,7 +30,7 @@ function defaultRouteFor(role: UserRole): string {
 }
 
 function AppShell() {
-  const { session, profile, loading } = useAuth();
+  const { session, profile, loading, signOut } = useAuth();
 
   if (loading) {
     return <div className="loading-screen">Loading…</div>;
@@ -36,6 +38,25 @@ function AppShell() {
 
   if (!session || !profile) {
     return <LoginPage />;
+  }
+
+  // A suspended or offboarded picker cannot use the app: no queue, no scanning,
+  // no receiving orders. The server also forces them offline and refuses to put
+  // them back online, but this blocks the UI immediately on their device.
+  if (profile.role === 'picker' && profile.status !== 'active') {
+    return (
+      <div className="auth-screen">
+        <div className="auth-card blocked-card">
+          <h1>Account {profile.status === 'offboarded' ? 'closed' : 'suspended'}</h1>
+          <p className="auth-subtitle">
+            {profile.status === 'offboarded'
+              ? 'This picker account has been closed. Please contact your administrator.'
+              : 'Your account has been suspended and is not receiving orders. Please contact your administrator to be reactivated.'}
+          </p>
+          <button type="button" onClick={() => void signOut()}>Sign out</button>
+        </div>
+      </div>
+    );
   }
 
   const allowedTabs = Object.entries(TAB_ACCESS)
@@ -64,6 +85,7 @@ function AppShell() {
             }
           />
           <Route path="/admin" element={<Guarded role={profile.role} allowed={['admin']}><AdminPage /></Guarded>} />
+          <Route path="/testing" element={<Guarded role={profile.role} allowed={['admin']}><TestingPage /></Guarded>} />
           <Route path="/manpower" element={<Guarded role={profile.role} allowed={['admin']}><ManpowerPage /></Guarded>} />
           <Route path="*" element={<Navigate to={defaultRouteFor(profile.role)} replace />} />
         </Routes>
