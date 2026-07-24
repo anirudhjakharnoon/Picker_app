@@ -48,8 +48,10 @@ export function friendlyScanError(
   }
 
   // --- Wrong wall (delivery-mode mismatch) --------------------------------
+  // Name the wall the order actually belongs to so the picker walks to the
+  // right place (an LMS order rejected at a Hyperlocal hole -> go to LMS wall).
   if (m.includes('wall')) {
-    return `Wrong wall - please scan an empty hole on the ${wallLabel(deliveryMode)}.`;
+    return `Wrong wall - please go to the ${wallLabel(deliveryMode)}.`;
   }
 
   // --- Wrong hole for a pre-assigned / sequenced order --------------------
