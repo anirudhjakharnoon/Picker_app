@@ -66,6 +66,15 @@ the Supabase SQL Editor (for example `0010` … `0013`).
   Advisor "Auth RLS Initialization Plan" warnings and the CPU-usage spike
   that comes with them — see Section 11.6.1 of the design doc). No behaviour
   change, just cheaper policy evaluation; safe to run on a live project.
+- **0022** — closes the "Public Can Execute SECURITY DEFINER Function" gap:
+  every function created (or given new parameters) after `0004` had kept
+  Postgres's default `PUBLIC`/`anon` execute grant, meaning fully anonymous
+  requests could call `admin_*` RPCs at all (most reject non-admins
+  internally, but the request still reached the database first). Re-revokes
+  execute from `public`/`anon` project-wide and adds a default-privileges
+  rule so future functions can't reopen this by accident. `authenticated`
+  access is unchanged. Run this if you see that advisor warning, or if your
+  project is under unexplained load — see Section 11.6.1 of the design doc.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this
