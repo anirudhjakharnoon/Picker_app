@@ -88,6 +88,17 @@ the Supabase SQL Editor (for example `0010` … `0013`).
   helper-function calls per load; with `0021` + `0024` + the client change it
   is 3.2 ms / 6.7 MB / 1 call. `orders_live_ingested_idx` is partial over
   non-terminal rows, so it stays sized to open work, not history.
+- **0025** — two fixes for the picker-chosen (hole-first) sorting flow:
+  (1) `record_warehouse_arrival_picker_chosen_v1` picked one sort wall for the
+  *whole* arrival batch with no regard for delivery mode, so a batch mixing an
+  LMS and a Hyperlocal order could assign both the same (wrong, for one of
+  them) wall — now matched per order. (2) Adds `resolve_bag_qr_v1`, a cheap
+  read-only lookup the app now calls before the mutating bag-scan RPC, so a
+  wrong-wall scan (the common case while pickers learn a two-wall layout) is
+  caught with one lock-free indexed read instead of a locking
+  transaction-then-rollback. `claim_pigeon_hole_v1` also now returns the held
+  hole's `wall_delivery_mode` so the client has the other half of that
+  comparison for free. See Sections 11.6.5–11.6.6 of the design doc.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this

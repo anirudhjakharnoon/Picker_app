@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { friendlyScanError } from './scanErrors';
+import { friendlyScanError, wallLabel } from './scanErrors';
+
+// wallLabel is exported so the client-side pre-check in PickerPage.tsx
+// (resolve_bag_qr_v1, see supabase/migrations/0026) can phrase its own instant
+// "wrong wall" message identically to the one friendlyScanError derives from
+// the server's exception text, rather than duplicating the mapping.
+describe('wallLabel', () => {
+  it('names each delivery mode\'s wall', () => {
+    expect(wallLabel('LMS')).toBe('LMS wall');
+    expect(wallLabel('Hyperlocal')).toBe('Hyperlocal wall');
+  });
+
+  it('falls back for an untagged/unknown mode', () => {
+    expect(wallLabel(null)).toBe('correct wall');
+    expect(wallLabel(undefined)).toBe('correct wall');
+  });
+});
 
 // The values on the left are the ACTUAL exception strings raised by the
 // Postgres RPCs (see supabase/migrations/*.sql). If a server message is

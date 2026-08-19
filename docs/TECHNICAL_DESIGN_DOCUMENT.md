@@ -1511,6 +1511,46 @@ Two independent fixes apply, and both are needed:
 
 The general rule for any new hook: select an explicit column list rather than `*`, and bound the query server-side. A filter that looks redundant for a picker is load-bearing for an admin.
 
+### 11.6.5 Pre-validate cheaply on the client before a mutating RPC can reject
+
+The picker-chosen hole-then-bag flow (`claim_pigeon_hole_v1` then `scan_bag_into_held_hole_v1` → `scan_bag_into_chosen_hole_v1`) only discovers a delivery-mode ("wrong wall") mismatch inside the second call, which by then has already taken `for update` row locks on both `orders` and `pigeon_holes` before raising and rolling back. That cost is paid on every wrong-wall scan, and wrong-wall scans are the common case while pickers are learning a two-wall layout — Supabase Postgres logs from a live test session showed on the order of a thousand identical `40001` "wall" rejections logged within under a second of real time, each one a full open-lock-raise-rollback cycle.
+
+`resolve_bag_qr_v1` (migration `0025`) exists to let the client rule out the common case before ever calling the mutating RPC: a single indexed, lock-free read —
+
+```sql
+select o.id, o.external_order_ref, o.delivery_mode, o.status
+from qr_codes q join orders o on o.id = q.entity_id
+where q.code_value = p_bag_qr_value and q.code_type = 'bag' and q.status = 'active';
+```
+
+— that resolves a scanned bag QR straight to its order's `delivery_mode`. It is `security invoker` (not `security definer`) *deliberately*: it needs no elevated privilege at all, so it runs as the calling picker and existing RLS on `qr_codes`/`orders` already scopes it correctly — a bag that is not the caller's returns zero rows, exactly like every other bag lookup in this schema. Verified directly: as the bag's owner it returns the order; as a different picker it returns nothing, matching a raw RLS-protected join.
+
+`claim_pigeon_hole_v1` now also returns the held hole's wall `delivery_mode` in its response (`wall_delivery_mode`), so the client has that half of the comparison for free from the claim — no extra round trip. The client (`ChooseHoleAndDropFlow.placeBag` in `PickerPage.tsx`) then compares the two locally; on a mismatch it shows the exact same picker-facing message immediately and releases the hold, without ever opening the write transaction.
+
+This is a fast path for the common case, **not a replacement for the authoritative check**: `scan_bag_into_chosen_hole_v1`'s own delivery-mode gate is untouched and still runs, and still rejects, on every write regardless of what the client concluded — a stale client cache or a modified client cannot misplace a bag; it can at worst fail to save the round trip it would have wasted.
+
+A full client-side resolution (no read at all) is not possible without shipping every valid bag-QR-to-order mapping to every client, which would both leak other pickers' order data and defeat RLS scoping entirely — so this is the best available trade-off between "no network call" and "safe."
+
+### 11.6.6 A per-batch decision made outside the loop it should be inside
+
+`record_warehouse_arrival_picker_chosen_v1` picked **one** sort wall for the *entire* arrival batch, before iterating `p_order_ids`, with no regard for delivery mode:
+
+```sql
+select id into v_sort_wall_id from sort_walls where warehouse_id = v_warehouse_id and status = 'active' limit 1;
+```
+
+If a picker arrives with an LMS order and a Hyperlocal order in the same batch, both got stamped with whichever wall happened to come back first — wrong for at least one of them, and with no `order by`, which wall "happens to come back first" is not something to rely on. Fixed by moving the lookup **inside** the per-order loop, one lookup per order, preferring a wall whose `delivery_mode` matches that order's (the same preference `record_warehouse_arrival_v1`, the pre-assigned-mode equivalent, already uses):
+
+```sql
+order by (delivery_mode is not distinct from v_order.delivery_mode) desc, created_at
+```
+
+Verified on a real Postgres instance: one arrival call with both an LMS and a Hyperlocal order in the same batch now assigns each its own correctly-matched wall, where before both would have received the same one.
+
+Note this field does not gate which holes a picker can physically scan — `claim_pigeon_hole_v1` is `security definer` and works off whatever hole QR is presented, independent of `orders.sort_wall_id` — so this was a correctness/reporting bug (order history/admin views recording the wrong wall), not a functional block on sorting. It is still worth being right, and the general lesson generalises: a decision that varies **per row** must be computed **inside** the loop over those rows, not hoisted above it for a shared default that happens to be convenient.
+
+---
+
 `admin_list_pickers_v1` was the one `admin_*` RPC that shipped without such a check (fixed in `0023_guard_admin_list_pickers.sql`). One trap worth knowing when adding these: the idiom used by the existing siblings,
 
 ```sql
