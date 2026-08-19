@@ -9,12 +9,12 @@ import { BagsGrid } from '../components/BagsGrid';
 import { FullscreenSheet } from '../components/FullscreenSheet';
 import { PullToRefresh } from '../components/PullToRefresh';
 import { CheckIcon, PinIcon, LogoutIcon } from '../components/icons';
-import type { Order } from '../types/database';
+import type { DeliveryMode, Order } from '../types/database';
 import { OrderAcceptSwipe } from '../components/OrderAcceptSwipe';
 import { StatusPill } from '../components/StatusPill';
 import { orderStatusMeta } from '../lib/status';
 import { useToast, type Toast, type ToastVariant } from '../lib/useToast';
-import { friendlyScanError } from '../lib/scanErrors';
+import { friendlyScanError, wallLabel } from '../lib/scanErrors';
 import { alertNewOrder, primeAudio, requestNotificationPermission } from '../lib/alerts';
 import { withTimeout } from '../lib/rpcTimeout';
 
@@ -1366,7 +1366,9 @@ function ChooseHoleAndDropFlow({
   const scanMode = useBagScanMode();
   const oneBag = scanMode === 'one_bag';
   const [phase, setPhase] = useState<ChooseHolePhase>('scan-hole');
-  const [hole, setHole] = useState<{ id: string; number: string; qr: string } | null>(null);
+  const [hole, setHole] = useState<{ id: string; number: string; qr: string; deliveryMode: DeliveryMode | null } | null>(
+    null,
+  );
   const [dropped, setDropped] = useState(0);
   // Unknown until the first bag scan reveals which order (and its bag count).
   const [expected, setExpected] = useState(0);
@@ -1401,12 +1403,19 @@ function ChooseHoleAndDropFlow({
         notify(friendlyScanError('claim-hole', error.message), 'error');
         return;
       }
-      const held = data as { hole_id?: string; hole_number?: string } | null;
+      const held = data as
+        | { hole_id?: string; hole_number?: string; wall_delivery_mode?: DeliveryMode | null }
+        | null;
       if (!held || typeof held.hole_id !== 'string' || typeof held.hole_number !== 'string') {
         notify('Unexpected response claiming the hole. Please try again.', 'error');
         return;
       }
-      setHole({ id: held.hole_id, number: held.hole_number, qr: value });
+      setHole({
+        id: held.hole_id,
+        number: held.hole_number,
+        qr: value,
+        deliveryMode: held.wall_delivery_mode ?? null,
+      });
       // A deliberate "hole on hold" screen unmounts the scanner between the hole
       // scan and the bag scan so the still-visible hole QR can't be read again
       // as a (rejected) bag scan.
@@ -1416,8 +1425,59 @@ function ChooseHoleAndDropFlow({
     }
   };
 
+  // Sends the picker back to scan a hole on the correct wall, releasing the
+  // one they are holding. Shared by both the fast pre-check below (which never
+  // touches the mutating RPC at all) and the server's own check inside it
+  // (kept as the authoritative fallback - see resolve_bag_qr_v1's migration
+  // comment for why the client check cannot fully replace it).
+  const rejectWrongWall = (message: string) => {
+    notify(message, 'error');
+    if (!placedRef.current) {
+      void supabase.rpc('release_held_hole_v1');
+      setHole(null);
+      setPhase('scan-hole');
+    }
+  };
+
   const placeBag = async (value: string) => {
     if (!hole) return;
+
+    // Resolve the scanned bag to its order's delivery mode with one cheap,
+    // lock-free read (RLS already scopes it to the caller's own orders - see
+    // resolve_bag_qr_v1) BEFORE calling the mutating scan RPC. A wall mismatch
+    // is the common case while pickers are learning a two-wall layout, and
+    // this turns it from "open a transaction, take row locks on orders and
+    // pigeon_holes, raise, roll back" into a single indexed SELECT. The
+    // mutating RPC still re-checks this itself on every write regardless of
+    // what this pre-check concludes, so a stale/bypassed client check cannot
+    // misplace a bag.
+    try {
+      const { data: resolved, error: resolveError } = await withTimeout(
+        supabase.rpc('resolve_bag_qr_v1', { p_bag_qr_value: value }),
+      );
+      if (!resolveError) {
+        const rows = (resolved as { delivery_mode: DeliveryMode | null }[] | null) ?? [];
+        const bagOrder = rows[0];
+        if (
+          bagOrder &&
+          bagOrder.delivery_mode != null &&
+          hole.deliveryMode != null &&
+          bagOrder.delivery_mode !== hole.deliveryMode
+        ) {
+          rejectWrongWall(`Wrong wall - please go to the ${wallLabel(bagOrder.delivery_mode)}.`);
+          return;
+        }
+      }
+      // No row (not the caller's bag / not a bag at all) or a resolve error:
+      // fall through to the mutating RPC below, which gives the same precise,
+      // already-tested error messages for those cases (friendlyScanError
+      // already covers them). The pre-check is an optimisation for the
+      // common, cheap-to-detect case, not a gate that can block a valid scan.
+    } catch {
+      // Timeout or network hiccup on the pre-check: proceed to the mutating
+      // RPC as if it had not run. It is the authoritative check either way.
+    }
+
     try {
       const result = await submitAction('scan_bag_into_held_hole', (clientEventId) => ({
         p_client_event_id: clientEventId,
@@ -1427,15 +1487,15 @@ function ChooseHoleAndDropFlow({
         p_device_id: navigator.userAgent.slice(0, 64),
       }));
       if (!result.ok) {
-        notify(friendlyScanError('chosen-bag', result.error), 'error');
-        // A wall mismatch before any bag has been placed means this hole is on
-        // the wrong wall for that order. Release it and send the picker back to
-        // scan a hole on the correct wall instead of leaving them stuck.
+        // A wall mismatch here means the pre-check above missed it (a race, or
+        // it timed out) - the server is still the last word. Same recovery as
+        // the pre-check: release the hole and send the picker back to scan one
+        // on the correct wall instead of leaving them stuck.
         if (!placedRef.current && (result.error ?? '').toLowerCase().includes('wall')) {
-          void supabase.rpc('release_held_hole_v1');
-          setHole(null);
-          setPhase('scan-hole');
+          rejectWrongWall(friendlyScanError('chosen-bag', result.error));
+          return;
         }
+        notify(friendlyScanError('chosen-bag', result.error), 'error');
         return;
       }
       const placement = result.data as

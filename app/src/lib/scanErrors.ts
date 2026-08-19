@@ -10,7 +10,7 @@ export type ScanContext =
   | 'claim-hole' // picker-chosen: scanning any free hole to hold it
   | 'chosen-bag'; // picker-chosen: scanning a bag into the chosen hole
 
-function wallLabel(mode?: DeliveryMode | null): string {
+export function wallLabel(mode?: DeliveryMode | null): string {
   if (mode === 'LMS') return 'LMS wall';
   if (mode === 'Hyperlocal') return 'Hyperlocal wall';
   return 'correct wall';
