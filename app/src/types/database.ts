@@ -3,7 +3,7 @@
 // These are NOT auto-generated because this environment has no Supabase CLI
 // access token to run `supabase gen types typescript`. Once you have the CLI
 // linked to the project, regenerate with:
-//   supabase gen types typescript --project-id aetrwtubfifljkxwocpy > src/types/database.ts
+//   supabase gen types typescript --project-id jptcwfxioelgedgfduzk > src/types/database.ts
 // and this file can be replaced wholesale.
 
 export type UserRole = 'picker' | 'warehouse_staff' | 'ops_manager' | 'admin';

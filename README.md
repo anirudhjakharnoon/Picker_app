@@ -9,7 +9,7 @@ The application code is now merged into `main`.
 
 
 1. [Supabase](https://supabase.com/) — you already created project
-   `aetrwtubfifljkxwocpy`.
+   `jptcwfxioelgedgfduzk`.
 2. [Vercel](https://vercel.com/signup) or
    [Cloudflare](https://dash.cloudflare.com/sign-up) — only needed when you
    want a public website. Local testing does not need either one.
@@ -33,7 +33,7 @@ Click **Raw**, then select all and copy the complete file.
 ## Step 2: Run it in Supabase
 
 1. Open the project's
-   [Supabase SQL Editor](https://supabase.com/dashboard/project/aetrwtubfifljkxwocpy/sql/new).
+   [Supabase SQL Editor](https://supabase.com/dashboard/project/jptcwfxioelgedgfduzk/sql/new).
 2. Click **New query** if an empty editor is not already open.
 3. Paste everything copied from `supabase/setup.sql`.
 4. Click **Run**.
@@ -129,7 +129,7 @@ Never copy the `service_role` or secret key into this app.
 The project URL is already:
 
 ```text
-https://aetrwtubfifljkxwocpy.supabase.co
+https://jptcwfxioelgedgfduzk.supabase.co
 ```
 
 ---
@@ -202,7 +202,7 @@ application error. This repository now includes `vercel.json` and a root
 
 | Name | Value |
 |---|---|
-| `VITE_SUPABASE_URL` | `https://aetrwtubfifljkxwocpy.supabase.co` |
+| `VITE_SUPABASE_URL` | `https://jptcwfxioelgedgfduzk.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | Your Supabase Publishable/anon key |
 
 7. Click **Deploy**.
@@ -242,7 +242,7 @@ Do this after local testing works.
 
 | Name | Value |
 |---|---|
-| `VITE_SUPABASE_URL` | `https://aetrwtubfifljkxwocpy.supabase.co` |
+| `VITE_SUPABASE_URL` | `https://jptcwfxioelgedgfduzk.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | Your Publishable/anon key |
 
 7. Click **Save and Deploy**.
@@ -375,7 +375,7 @@ short-lived blip, for example right after running a migration, or the
 project waking back up from being paused. If it does not clear up within a
 minute or two:
 
-1. Open the [Supabase dashboard](https://supabase.com/dashboard/project/aetrwtubfifljkxwocpy)
+1. Open the [Supabase dashboard](https://supabase.com/dashboard/project/jptcwfxioelgedgfduzk)
    and check for a "paused" / "restoring" banner. Free-tier projects
    auto-pause after a week of inactivity — click **Restore project** if so.
 2. **Project Settings → Infrastructure/General → Restart project.** This is
