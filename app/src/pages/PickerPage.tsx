@@ -1051,11 +1051,14 @@ function SortingOrderStep({
 }) {
   const [steps, setSteps] = useState<SortingStep[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     void supabase.rpc('get_order_sorting_steps_v1', { p_order_id: order.id }).then(({ data, error: rpcError }) => {
       if (cancelled) return;
+      setLoading(false);
       if (rpcError) {
         setError(rpcError.message);
         return;
@@ -1076,6 +1079,22 @@ function SortingOrderStep({
         <span className="sorting-total">Dropped {order.bag_count_scanned_sort}/{order.bag_count_expected} bags</span>
       </div>
       {error && <p className="error-text">{error}</p>}
+      {/* No reserved hole means this shipment went to overflow at the gate:
+          nothing on a matching wall was free. Without this the card renders a
+          header and no action at all, which reads as the app being broken. */}
+      {!loading && !error && steps.length === 0 && (
+        <div className="sorting-no-hole">
+          <p>
+            <strong>No pigeon hole is reserved for this shipment yet.</strong>
+          </p>
+          <p>
+            {order.delivery_mode
+              ? `This is a ${order.delivery_mode} shipment, so it needs a free hole on a ${order.delivery_mode} wall. There wasn't one when it arrived.`
+              : `There was no free hole on a matching wall when it arrived.`}
+          </p>
+          <p>Show this to your warehouse admin — they need to free up a hole or add one for this wall.</p>
+        </div>
+      )}
       {current && current.hole_number && (
         <button
           type="button"
@@ -1354,11 +1373,22 @@ function ChooseHoleAndDropFlow({
   const [orderRef, setOrderRef] = useState<string | null>(null);
   const placedRef = useRef(false);
 
-  const closeFlow = () => {
+  const closeFlow = async () => {
     // Free the hold if no bag was placed yet, so an abandoned hole doesn't stay
     // locked. A hole already linked to an order is untouched by this call.
-    if (!placedRef.current) void supabase.rpc('release_held_hole_v1');
-    void onDone();
+    //
+    // Awaited rather than fire-and-forget: un-awaited, this could land while a
+    // bag scan for the same hole was still in flight, taking the row lock and
+    // clearing the hold underneath it.
+    if (!placedRef.current) {
+      try {
+        await supabase.rpc('release_held_hole_v1');
+      } catch {
+        // Losing the hold release is not worth blocking the picker on; the hold
+        // is reclaimed by the TTL in pigeon_hole_hold_ttl_v1().
+      }
+    }
+    await onDone();
   };
 
   const claimHole = async (value: string) => {
