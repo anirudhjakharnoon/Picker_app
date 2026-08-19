@@ -1486,6 +1486,18 @@ The fix (applied in `supabase/migrations/0021_optimize_rls_performance.sql`, no 
 
 `supabase/migrations/0022_revoke_public_function_execute.sql` re-runs the same blanket revoke (safe to run repeatedly — it now also catches every function/overload added since) and adds `alter default privileges in schema public revoke execute on functions from public;` so this can't silently reopen the next time a function is created or reshaped. `authenticated` access is unaffected. If a project ever seems to be under load with no obvious client-side cause, checking this advisor category (and the project's Auth/API logs for anonymous or unauthenticated RPC traffic) should be one of the first places to look, alongside 11.6.1.
 
+### 11.6.3 The in-function role check is the authorization boundary for RPCs, not the grant
+
+`authenticated` deliberately holds `EXECUTE` on the browser-facing RPC surface, and those RPCs are deliberately `SECURITY DEFINER` so they can enforce the Section 6 state machine while bypassing RLS. That combination is what Supabase's Advisor reports as "Signed-In Users Can Execute SECURITY DEFINER Function" (lint `0029`), and for this app it is expected rather than a finding to clear: **the guard is the role check inside each function body, not the grant.** Every `admin_*` function must therefore open with an admin check, and internal-only helpers (`assign_order_to_picker_v1`, `try_auto_assign_order_v1`, `picker_zone_eligible_v1`, the trigger functions, …) must never be granted to `authenticated` at all — `0022` is what keeps them unreachable, and a `SECURITY DEFINER` caller can still invoke them internally regardless of the caller's own grants.
+
+`admin_list_pickers_v1` was the one `admin_*` RPC that shipped without such a check (fixed in `0023_guard_admin_list_pickers.sql`). One trap worth knowing when adding these: the idiom used by the existing siblings,
+
+```sql
+if (select role from profiles where id = auth.uid()) <> 'admin' then raise exception 'not permitted' using errcode = '42501'; end if;
+```
+
+**fails open** if the caller has no `profiles` row, because `NULL <> 'admin'` evaluates to `NULL` rather than `TRUE` and the `if` body is skipped. It is safe in practice today only because `anon` holds no `EXECUTE` and `handle_new_auth_user` creates a profile row for every new auth user. New guards should use the null-safe helper instead — `if not auth_is_admin() then ...`, which is `coalesce(auth_role() = 'admin', false)` — and the existing siblings are worth migrating to it opportunistically.
+
 ---
 
 # 12. Admin Panel
