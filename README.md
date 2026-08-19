@@ -429,3 +429,7 @@ Cloudflare settings in Part 4B/4C.
 - [Detailed app documentation](app/README.md)
 - [Technical architecture](docs/TECHNICAL_DESIGN_DOCUMENT.md)
 - [Numbered database migrations](supabase/migrations/)
+- [Moving to a fresh Supabase project](docs/NEW_SUPABASE_PROJECT.md) — verified
+  runbook for rebuilding the backend from `supabase/setup.sql` when a project is
+  unrecoverable, including what to salvage first and what to harden before
+  reopening to traffic.
