@@ -81,6 +81,13 @@ the Supabase SQL Editor (for example `0010` … `0013`).
   status and the last four digits of each mobile. Codes and phones were
   already masked, so this was a partial leak, not a full one. Admin behaviour,
   signature and masking are unchanged.
+- **0024** — two indexes supporting the bounded `orders` query the PWA now
+  issues. `useOrders()` previously fetched every order visible to the caller
+  with no filter or limit, which for an admin is the whole table, on mount and
+  on every tab-focus. Measured on 20k orders that was 330 ms / 16 MB / 40,000
+  helper-function calls per load; with `0021` + `0024` + the client change it
+  is 3.2 ms / 6.7 MB / 1 call. `orders_live_ingested_idx` is partial over
+  non-terminal rows, so it stays sized to open work, not history.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this
