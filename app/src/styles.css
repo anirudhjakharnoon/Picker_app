@@ -311,6 +311,16 @@ section {
   color: #fff;
 }
 
+.backend-down-heading {
+  margin: 1.1rem 0 0.5rem;
+  font-size: 1.15rem;
+  line-height: 1.3;
+}
+
+.backend-down-heading + .auth-subtitle {
+  margin-bottom: 0.75rem;
+}
+
 .field-hint {
   display: block;
   margin-top: 0.25rem;

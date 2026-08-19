@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthProvider';
 import { useAuth } from './auth/AuthContext';
 import { LoginPage } from './pages/LoginPage';
+import { BackendUnavailablePage } from './pages/BackendUnavailablePage';
 import { PickerPage } from './pages/PickerPage';
 import { SortWallPage } from './pages/SortWallPage';
 import { AdminPage } from './pages/AdminPage';
@@ -36,8 +37,15 @@ function AppShell() {
     return <div className="loading-screen">Loading…</div>;
   }
 
-  if (!session || !profile) {
+  if (!session) {
     return <LoginPage />;
+  }
+
+  // Signed in, but the profile read that must follow it failed (typically the
+  // REST API being unreachable). Re-showing the sign-in form here would read as
+  // "wrong login code" for credentials that were actually accepted.
+  if (!profile) {
+    return <BackendUnavailablePage />;
   }
 
   // A suspended or offboarded picker cannot use the app: no queue, no scanning,
