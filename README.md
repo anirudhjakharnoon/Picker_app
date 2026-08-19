@@ -314,6 +314,51 @@ order by code_type, created_at;
 
 # Troubleshooting
 
+## Can't log in after toggling Vercel "Deployment Protection" off/on
+
+This app authenticates entirely client-side, straight from the browser to
+Supabase (email/password via `supabase.auth.signInWithPassword`). There is no
+server-side auth code in this repository, so if login suddenly stops working
+right after you flipped a **Vercel** setting off and back on, the cause is
+almost always Vercel's **Deployment Protection** (also shown as "Vercel
+Authentication" / password protection), not this app's code.
+
+What happens: when Deployment Protection is enabled with scope **All
+Deployments**, Vercel puts its own login wall in front of *every* URL for the
+project — including your production domain — before your app's HTML/JS is
+ever served. Anyone without a Vercel account for your team (every Picker and
+Warehouse Staff user) gets stuck on Vercel's "Authentication Required" page
+and never even reaches this app's own Sign In screen. Turning the toggle off
+then back on can silently reset the scope to **All Deployments** instead of
+the "previews only" scope you likely want.
+
+How to confirm this is the cause:
+
+1. Open your production URL in a private/incognito window (so you aren't
+   auto-passed through by an existing Vercel session cookie).
+2. If you see a **Vercel** login/access-request page instead of this app's
+   own "Dubai Mall" Sign In screen, Deployment Protection is the problem —
+   this is a Vercel project setting, not something fixable in the app code.
+
+How to fix it:
+
+1. In the [Vercel dashboard](https://vercel.com/dashboard), open your
+   project → **Settings** → **Deployment Protection**.
+2. Under **Vercel Authentication**, either:
+   - turn it **off** entirely, or
+   - keep it on but set the scope to **Standard Protection** (protects
+     preview deployments and the long auto-generated `*.vercel.app` URLs,
+     but leaves your production domain public), instead of **All
+     Deployments** (which also gates production).
+3. Click **Save**, then reload your production URL in a private window to
+   confirm the app's own Sign In screen loads.
+4. If you specifically want the whole site gated by Vercel *in addition to*
+   normal app logins, you'll need to give every Picker/Warehouse Staff user
+   a Vercel account with project access (or a shared access link) — this app
+   was not designed to run behind that wall, since it relies on Supabase's
+   own login as the access boundary (see `docs/TECHNICAL_DESIGN_DOCUMENT.md`
+   Section 11.6).
+
 ## “Invalid login credentials”
 
 - Confirm the user exists under Supabase **Authentication** → **Users**.
