@@ -61,6 +61,11 @@ the Supabase SQL Editor (for example `0010` … `0013`).
 - **0011** — `admin_create_picker_v1` (Manpower create without an Edge Function)
 - **0012** — clearer picker-create validation errors / broader mobile formats
 - **0013** — ensures `orders.is_fragile` exists (needed after 0010 if 0005 was skipped)
+- **0021** — rewrites every RLS policy so `auth.uid()` / helper-function calls
+  are computed once per query instead of once per row (fixes the Supabase
+  Advisor "Auth RLS Initialization Plan" warnings and the CPU-usage spike
+  that comes with them — see Section 11.6.1 of the design doc). No behaviour
+  change, just cheaper policy evaluation; safe to run on a live project.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this

@@ -1474,6 +1474,12 @@ Authorization is enforced in two server-side layers: **RLS policies** for row vi
 
 Default posture: enable RLS on every table in exposed schemas, grant no anonymous access, deny direct mutation of state-machine tables, and add policies one workflow at a time. A test suite must execute every role against allowed and forbidden cases before pilot; with a browser-direct Supabase architecture, RLS is part of the backend, not optional hardening.
 
+### 11.6.1 RLS performance: wrap `auth.*()` / helper-function calls in a subquery
+
+Every policy above calls a helper like `auth_is_admin()`, `auth_warehouse_id()`, or `auth.uid()` directly inside `USING (...)`. Postgres cannot prove a bare function call is constant for the whole statement, so — even though these helpers are `STABLE` — it falls back to invoking them once *per row scanned*, and each of `auth_is_admin()`/`auth_warehouse_id()`/`auth_role()` itself does a lookup against `profiles`. On any query that scans more than a handful of rows (`orders`, `bag_scans`, `pigeon_hole_assignments`, `status_history`, Realtime change checks, …) this multiplies into a large number of extra `profiles` lookups, which shows up directly as sustained CPU load on the (shared, limited) free-tier compute — exactly the kind of thing the Supabase Advisor's "Auth RLS Initialization Plan" lint flags.
+
+The fix (applied in `supabase/migrations/0021_optimize_rls_performance.sql`, no authorization behaviour change) is to wrap every such call in a scalar subquery, e.g. `id = (select auth.uid())` instead of `id = auth.uid()`, and `(select auth_is_admin())` instead of `auth_is_admin()`. This lets the planner fold the call into a one-time `InitPlan` — computed once per statement and reused for every row — instead of re-invoking it per row. Any new policy added after this file should follow the same pattern from the start; see [Supabase's own writeup](https://supabase.com/docs/guides/troubleshooting/rls-performance-and-best-practices-Z5Jjwv) for the general technique.
+
 ---
 
 # 12. Admin Panel
