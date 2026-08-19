@@ -88,8 +88,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
     if (signInError) {
-      setError(signInError.message);
-      return { error: signInError.message };
+      // A gateway-level failure (e.g. a 521 with no CORS headers on the error
+      // response) reaches us as a bare "Failed to fetch", which reads as a
+      // rejected login. Humanising it keeps "wrong login code" and "the server
+      // is unreachable" distinguishable on the sign-in screen.
+      const message = humanizeAuthError(signInError.message);
+      setError(message);
+      return { error: message };
     }
     return { error: null };
   }, []);

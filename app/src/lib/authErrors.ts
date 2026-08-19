@@ -20,7 +20,12 @@ const RETRYABLE_PATTERNS = [
   /fetch failed/i,
   /timed? ?out/i,
   /ECONNRESET/i,
-  /503/,
+  // Gateway-level failures seen when the project's REST API is down while the
+  // database instance is out of CPU/memory headroom: 5xx from the API gateway,
+  // plus Cloudflare's 521 (origin down) / 522 (connection timed out) / 525 (TLS
+  // handshake failed). These arrive with no CORS headers, so the browser often
+  // surfaces them as a bare "Failed to fetch" rather than a status code.
+  /\b(500|502|503|504|521|522|523|524|525)\b/,
 ];
 
 export function isRetryableAuthError(message: string): boolean {
@@ -35,8 +40,12 @@ export function humanizeAuthError(message: string): string {
     return 'The database is temporarily unavailable, so your account details could not be loaded. This is usually a brief Supabase hiccup (for example, right after a migration or the project waking back up) and clears up on its own within a minute or two. Tap Retry, or reload the page shortly.';
   }
 
+  if (/\b(500|502|503|504|521|522|523|524|525)\b/.test(text)) {
+    return 'The server is not responding right now (it returned a temporary error). This is a server-side problem, not your login details. Try again in a moment.';
+  }
+
   if (/failed to fetch|network ?error|fetch failed|ECONNRESET/i.test(text)) {
-    return 'Could not reach the server. Check your connection and try again.';
+    return 'Could not reach the server. This is either your connection or a temporary server outage — it is not a problem with your login details. Try again in a moment.';
   }
 
   return text;
