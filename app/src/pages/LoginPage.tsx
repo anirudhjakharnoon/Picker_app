@@ -3,12 +3,25 @@ import { useAuth } from '../auth/AuthContext';
 import { toPickerAuthEmail } from '../lib/pickerAuth';
 
 export function LoginPage() {
-  const { signInWithPassword, error } = useAuth();
+  const { signInWithPassword, error, session, profile, retrying, refreshProfile } = useAuth();
   const [mode, setMode] = useState<'picker' | 'staff'>('picker');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [manualRetrying, setManualRetrying] = useState(false);
+
+  // A session can already exist (e.g. a previous sign-in) while the profile
+  // fetch that follows it keeps failing on a transient backend error — that
+  // shows this same screen (see AppShell in App.tsx) with `error` set, even
+  // though the credentials below are irrelevant to fixing it.
+  const isStuckOnProfileLoad = Boolean(session) && !profile;
+
+  const handleRetry = async () => {
+    setManualRetrying(true);
+    await refreshProfile();
+    setManualRetrying(false);
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -30,6 +43,15 @@ export function LoginPage() {
         <p className="auth-subtitle">
           {mode === 'picker' ? 'Pickers sign in with the mobile number and login code issued in Manpower.' : 'Staff sign in with the email and password an admin created for you.'}
         </p>
+        {isStuckOnProfileLoad && (localError === null) && (
+          <div className="error-text" role="status">
+            <p>{error}</p>
+            {retrying && !manualRetrying && <p>Retrying automatically…</p>}
+            <button type="button" onClick={() => void handleRetry()} disabled={manualRetrying}>
+              {manualRetrying ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        )}
         <div className="login-mode-switch" role="tablist" aria-label="Sign-in type">
           <button
             type="button"
@@ -80,7 +102,9 @@ export function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          {(localError || error) && <p className="error-text">{localError ?? error}</p>}
+          {(localError || (error && !isStuckOnProfileLoad)) && (
+            <p className="error-text">{localError ?? error}</p>
+          )}
           <button type="submit" disabled={submitting}>
             {submitting ? 'Signing in…' : 'Sign in'}
           </button>
