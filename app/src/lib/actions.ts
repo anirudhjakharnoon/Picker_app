@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { withTimeout } from './rpcTimeout';
+import { isRpcTimeout, withTimeout } from './rpcTimeout';
 
 export type ActionType =
   | 'accept_order'
@@ -37,15 +37,38 @@ export async function submitAction(
   buildPayload: (clientEventId: string) => Record<string, unknown>,
 ): Promise<ActionResult> {
   const localId = crypto.randomUUID();
-  try {
-    // Race against a timeout so a hung request never leaves the scanner awaiting
-    // forever (server-side idempotency makes a retry safe).
-    const { data, error } = await withTimeout(supabase.rpc(rpcNameFor(type), buildPayload(localId)));
-    if (error) return { localId, ok: false, error: error.message };
-    return { localId, ok: true, data };
-  } catch (err) {
-    return { localId, ok: false, error: err instanceof Error ? err.message : 'Request failed. Please try again.' };
+  const payload = buildPayload(localId);
+  const rpc = rpcNameFor(type);
+
+  // Attempt twice on timeout only. The retry reuses the SAME client event id, so
+  // the server treats it as a replay of the first attempt rather than a second
+  // scan: verified against the real RPCs, a repeated p_client_event_id returns
+  // `idempotent_replay: true`, leaves bag_count_scanned_sort unchanged, and
+  // records exactly one bag_scans row. That makes this the difference between a
+  // picker seeing a spurious "took too long" for work the server actually did,
+  // and seeing the correct result.
+  //
+  // Real errors (wrong bag, hole occupied, not permitted) are returned on the
+  // first attempt and never retried.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { data, error } = await withTimeout(supabase.rpc(rpc, payload));
+      if (error) return { localId, ok: false, error: error.message };
+      return { localId, ok: true, data };
+    } catch (err) {
+      const lastAttempt = attempt === 1;
+      if (!isRpcTimeout(err) || lastAttempt) {
+        return {
+          localId,
+          ok: false,
+          error: err instanceof Error ? err.message : 'Request failed. Please try again.',
+        };
+      }
+      // Timed out with an attempt left: fall through and replay the same id.
+    }
   }
+
+  return { localId, ok: false, error: 'Request failed. Please try again.' };
 }
 
 function rpcNameFor(type: ActionType): string {
