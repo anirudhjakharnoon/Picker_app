@@ -75,6 +75,12 @@ the Supabase SQL Editor (for example `0010` … `0013`).
   rule so future functions can't reopen this by accident. `authenticated`
   access is unchanged. Run this if you see that advisor warning, or if your
   project is under unexplained load — see Section 11.6.1 of the design doc.
+- **0023** — adds the missing caller-role check to `admin_list_pickers_v1`.
+  It was the only `admin_*` RPC without one, so any signed-in user (including
+  any picker) could read the whole picker roster — names, zones, live online
+  status and the last four digits of each mobile. Codes and phones were
+  already masked, so this was a partial leak, not a full one. Admin behaviour,
+  signature and masking are unchanged.
 
 Once it has run, the Admin panel's **Reset test orders** section can clear the
 current test orders safely. It requires typing `RESET ALL TEST ORDERS`; this
