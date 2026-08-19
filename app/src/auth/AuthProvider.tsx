@@ -1,29 +1,59 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import type { Profile } from '../types/database';
 import { AuthContext } from './AuthContext';
+import { humanizeAuthError, isRetryableAuthError } from '../lib/authErrors';
+
+// A transient PostgREST/Supabase hiccup (e.g. PGRST002 "Could not query the
+// database for the schema cache") should not permanently strand a user on an
+// error screen. Retry a few times with backoff before surfacing anything.
+const PROFILE_LOAD_RETRY_DELAYS_MS = [500, 1500, 3000, 5000];
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const loadProfileGenerationRef = useRef(0);
 
   const loadProfile = useCallback(async (userId: string) => {
-    const { data, error: profileError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+    const generation = ++loadProfileGenerationRef.current;
+    const isStale = () => generation !== loadProfileGenerationRef.current;
 
-    if (profileError) {
-      setError(profileError.message);
-      setProfile(null);
-      return;
+    for (let attempt = 0; attempt <= PROFILE_LOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+      const { data, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (isStale()) return; // a newer call (e.g. sign-out, re-sign-in) superseded this one
+
+      if (!profileError) {
+        setProfile(data as unknown as Profile);
+        setError(null);
+        setRetrying(false);
+        return;
+      }
+
+      const attemptsRemaining = attempt < PROFILE_LOAD_RETRY_DELAYS_MS.length;
+      if (!isRetryableAuthError(profileError.message) || !attemptsRemaining) {
+        setError(humanizeAuthError(profileError.message));
+        setProfile(null);
+        setRetrying(false);
+        return;
+      }
+
+      setRetrying(true);
+      await delay(PROFILE_LOAD_RETRY_DELAYS_MS[attempt]);
+      if (isStale()) return;
     }
-    setProfile(data as unknown as Profile);
-    setError(null);
   }, []);
 
   useEffect(() => {
@@ -87,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         profile,
         loading,
         error,
+        retrying,
         signInWithPassword,
         signOut,
         refreshProfile,

@@ -359,6 +359,36 @@ How to fix it:
    own login as the access boundary (see `docs/TECHNICAL_DESIGN_DOCUMENT.md`
    Section 11.6).
 
+## “Could not query the database for the schema cache. Retrying.”
+
+This is **Supabase's own backend error** (`PGRST002`), not something this
+app generates — it means PostgREST (Supabase's REST API layer) could not
+query the underlying Postgres database to build its schema cache. It shows
+up wherever the app happens to be reading data at the time (often the sign-in
+screen, because that's where `profiles` is fetched right after a successful
+password check), but it has nothing to do with the email/phone or password
+you typed — every login attempt will fail identically while it lasts.
+
+The app now retries this automatically for a few seconds (with a "Retrying
+automatically…" hint and a manual **Retry** button) since it's usually a
+short-lived blip, for example right after running a migration, or the
+project waking back up from being paused. If it does not clear up within a
+minute or two:
+
+1. Open the [Supabase dashboard](https://supabase.com/dashboard/project/aetrwtubfifljkxwocpy)
+   and check for a "paused" / "restoring" banner. Free-tier projects
+   auto-pause after a week of inactivity — click **Restore project** if so.
+2. **Project Settings → Infrastructure/General → Restart project.** This is
+   the most reliable fix for a stuck PostgREST schema cache.
+3. Check **Reports → Database** for CPU, memory, disk, and connection-count
+   spikes — running several large migrations back to back (or re-running
+   `setup.sql`) can transiently exhaust the free tier's limited resources.
+4. Check **Logs → Postgres logs** around the time it started for messages
+   like "too many connections", "out of memory", or disk-full errors.
+
+Once the project is healthy again, reload the app (or tap **Retry**) and
+sign in as usual — no code change or redeploy is needed.
+
 ## “Invalid login credentials”
 
 - Confirm the user exists under Supabase **Authentication** → **Users**.

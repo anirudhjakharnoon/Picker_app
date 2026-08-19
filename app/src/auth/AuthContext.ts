@@ -7,6 +7,12 @@ export interface AuthContextValue {
   profile: Profile | null;
   loading: boolean;
   error: string | null;
+  /**
+   * True while a profile load is retrying after a transient Supabase error
+   * (e.g. PGRST002 "schema cache" hiccups). The UI can use this to show a
+   * "still trying to connect" hint instead of a dead-end error message.
+   */
+  retrying: boolean;
   signInWithPassword: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
