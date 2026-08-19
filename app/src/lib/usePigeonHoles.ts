@@ -2,6 +2,21 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import type { PigeonHole, SortWall } from '../types/database';
 
+// Explicit column lists rather than `*`, for the same reason as useOrders:
+// stable payloads as the tables gain columns, and no bytes shipped that no
+// screen reads. Both tables are bounded by physical wall size, so unlike
+// `orders` they need no row-count bound.
+const HOLE_COLUMNS = [
+  'id', 'sort_wall_id', 'hole_number', 'qr_code_id', 'status',
+  'priority_reserved', 'bag_capacity', 'held_by_picker_id', 'held_at',
+  'created_at', 'updated_at',
+].join(',');
+
+const WALL_COLUMNS = [
+  'id', 'warehouse_id', 'name', 'rows', 'columns', 'status',
+  'delivery_mode', 'created_at', 'updated_at',
+].join(',');
+
 export function usePigeonHoles() {
   const [holes, setHoles] = useState<PigeonHole[]>([]);
   const [sortWalls, setSortWalls] = useState<SortWall[]>([]);
@@ -10,8 +25,8 @@ export function usePigeonHoles() {
 
   const refetch = useCallback(async () => {
     const [holesRes, wallsRes] = await Promise.all([
-      supabase.from('pigeon_holes').select('*').order('hole_number', { ascending: true }),
-      supabase.from('sort_walls').select('*'),
+      supabase.from('pigeon_holes').select(HOLE_COLUMNS).order('hole_number', { ascending: true }),
+      supabase.from('sort_walls').select(WALL_COLUMNS),
     ]);
 
     if (holesRes.error) setError(holesRes.error.message);

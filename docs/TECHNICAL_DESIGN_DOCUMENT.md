@@ -1490,6 +1490,27 @@ The fix (applied in `supabase/migrations/0021_optimize_rls_performance.sql`, no 
 
 `authenticated` deliberately holds `EXECUTE` on the browser-facing RPC surface, and those RPCs are deliberately `SECURITY DEFINER` so they can enforce the Section 6 state machine while bypassing RLS. That combination is what Supabase's Advisor reports as "Signed-In Users Can Execute SECURITY DEFINER Function" (lint `0029`), and for this app it is expected rather than a finding to clear: **the guard is the role check inside each function body, not the grant.** Every `admin_*` function must therefore open with an admin check, and internal-only helpers (`assign_order_to_picker_v1`, `try_auto_assign_order_v1`, `picker_zone_eligible_v1`, the trigger functions, …) must never be granted to `authenticated` at all — `0022` is what keeps them unreachable, and a `SECURITY DEFINER` caller can still invoke them internally regardless of the caller's own grants.
 
+### 11.6.4 Client reads must be bounded, because RLS scopes an admin to everything
+
+RLS decides *which* rows a caller may see; it does nothing to stop a client asking for all of them. `useOrders()` originally ran `select('*')` on `orders` with no filter and no limit, on mount and again on every tab-focus. For a picker RLS trims that to their own work, but **an admin is scoped to every order that has ever existed**, so opening the app as an admin fetched the entire table — and the cost of doing so grew with all history ever recorded, permanently.
+
+Measured on a seeded 20,000-order table, that one query cost:
+
+| | rows | payload | exec time | `auth_is_admin()` calls | `auth_role()` calls |
+|---|---|---|---|---|---|
+| before `0021`, `select *` unbounded | 20,000 | 16.0 MB | 330 ms | 20,000 | 20,000 |
+| after `0021`, same query | 20,000 | 16.0 MB | 35 ms | 1 | 1 |
+| after `0021` + `0024` + bounded client query | 8,397 | 6.7 MB | 3.2 ms | 1 | 1 |
+
+The first row is the important one to understand: **one admin page load performed 40,000 helper-function invocations**, and every `auth_role()` among them ran its own `profiles` lookup. Nothing external was needed to generate enormous internal query volume — the app did it to itself, once per row, on every refetch, for every user. That is the mechanism behind sustained 100% CPU on a small instance, and it compounds silently as the table grows.
+
+Two independent fixes apply, and both are needed:
+
+1. **Per-row → per-statement helper evaluation** (§11.6.1, migration `0021`): 20,000 helper calls become 1.
+2. **Bounding the row set** (migration `0024` + `app/src/lib/useOrders.ts`): the client asks only for non-terminal orders plus terminal ones still inside a short recency window, so an order a picker has only just completed does not disappear mid-flow. `orders_live_ingested_idx` is a *partial* index over exactly the non-terminal rows, so it stays sized to open work rather than to history — 184 kB versus 1096 kB for the equivalent full index on the same table.
+
+The general rule for any new hook: select an explicit column list rather than `*`, and bound the query server-side. A filter that looks redundant for a picker is load-bearing for an admin.
+
 `admin_list_pickers_v1` was the one `admin_*` RPC that shipped without such a check (fixed in `0023_guard_admin_list_pickers.sql`). One trap worth knowing when adding these: the idiom used by the existing siblings,
 
 ```sql
