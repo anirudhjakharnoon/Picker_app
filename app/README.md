@@ -24,7 +24,7 @@ can apply them however is convenient:
 
 **Option A — Supabase SQL editor (fastest, no CLI needed):**
 
-1. Open your project's SQL editor: `https://supabase.com/dashboard/project/aetrwtubfifljkxwocpy/sql/new`
+1. Open your project's SQL editor: `https://supabase.com/dashboard/project/jptcwfxioelgedgfduzk/sql/new`
 2. Copy the complete generated `supabase/setup.sql` file.
 3. Paste it into the SQL editor and click **Run**.
 
@@ -35,7 +35,7 @@ upgrade (`0006_operations_capacity_and_qr.sql`).
 **Option B — Supabase CLI (if you link the project locally):**
 
 ```bash
-supabase link --project-ref aetrwtubfifljkxwocpy
+supabase link --project-ref jptcwfxioelgedgfduzk
 supabase db push
 ```
 

@@ -1109,7 +1109,7 @@ The REST contracts below describe stable domain operations, not a requirement to
 | Live Sort Wall changes | Supabase Realtime subscriptions, with periodic refetch as recovery |
 | Static PWA | Free Cloudflare Pages hosting |
 
-The PWA receives only the public Supabase project URL (`https://aetrwtubfifljkxwocpy.supabase.co`) and public anon/publishable key. The Supabase service-role key is never shipped to the browser. RLS must be enabled and tested on every exposed table before any real account is created.
+The PWA receives only the public Supabase project URL (`https://jptcwfxioelgedgfduzk.supabase.co`) and public anon/publishable key. The Supabase service-role key is never shipped to the browser. RLS must be enabled and tested on every exposed table before any real account is created.
 
 ## 7.1 Conventions (apply to every endpoint below)
 
@@ -1835,7 +1835,7 @@ Every option below is scored against the same five criteria, weighted for **this
 - **Cost:** **$0 on Supabase Free while within its current database, egress, Realtime, Auth, Storage, and Edge Function quotas.** Limits/pricing/inactivity behavior can change, so the project dashboard must be checked regularly rather than relying on hard-coded numbers in this document. Because it remains Postgres, later migration does not require a domain-model rewrite.
 - **Hiring:** Postgres + standard REST/SQL skills — the same large, easy-to-hire-for pool as plain Postgres, unlike Firebase or the no-code platforms above.
 - **Maintenance:** Low — managed backups, managed auth, managed realtime infrastructure.
-- **Verdict: ✅ Chosen.** Project URL: `https://aetrwtubfifljkxwocpy.supabase.co`. Use Auth, Postgres/RLS, Realtime, Storage only if needed, Postgres RPC for transactions, and Edge Functions only for secret-bearing external webhooks.
+- **Verdict: ✅ Chosen.** Project URL: `https://jptcwfxioelgedgfduzk.supabase.co`. Use Auth, Postgres/RLS, Realtime, Storage only if needed, Postgres RPC for transactions, and Edge Functions only for secret-bearing external webhooks.
 
 ## 19.4 Alternative: plain Postgres + a custom backend framework
 
@@ -1860,7 +1860,7 @@ Use **React + TypeScript + Vite** with a PWA plugin/service worker, Supabase JS,
 
 - **One frontend:** React + TypeScript + Vite PWA, with role-gated Picker, Sort Wall, Ops, and Admin routes.
 - **Frontend hosting:** Cloudflare Pages free tier.
-- **Backend/database/auth/realtime:** Supabase Free project at `https://aetrwtubfifljkxwocpy.supabase.co`.
+- **Backend/database/auth/realtime:** Supabase Free project at `https://jptcwfxioelgedgfduzk.supabase.co`.
 - **Business logic:** Postgres RPC functions for transactions; RLS for every exposed table; Supabase Edge Functions only for Store/Partner webhooks that require secrets.
 - **Offline:** service worker for app shell + IndexedDB/Dexie for assignments and pending actions.
 - **Notifications:** durable in-app notifications + Supabase Realtime; optional Web Push only where browser support permits. No paid SMS/WhatsApp provider.
@@ -1868,7 +1868,7 @@ Use **React + TypeScript + Vite** with a PWA plugin/service worker, Supabase JS,
 
 This is the least-time, $0 recurring-cost architecture. Its deliberate trade-off is browser/PWA platform variability (Section 10.6) and reliance on Supabase free-tier quotas. It preserves an exit path because the data model is standard Postgres and the critical operations have explicit RPC contracts.
 
-**PWA build configuration:** `VITE_SUPABASE_URL=https://aetrwtubfifljkxwocpy.supabase.co` and `VITE_SUPABASE_PUBLISHABLE_KEY=<public key from Supabase dashboard>`. These values appear in browser JavaScript by design. Never create a `VITE_SUPABASE_SERVICE_ROLE_KEY`; any variable prefixed for the frontend is public.
+**PWA build configuration:** `VITE_SUPABASE_URL=https://jptcwfxioelgedgfduzk.supabase.co` and `VITE_SUPABASE_PUBLISHABLE_KEY=<public key from Supabase dashboard>`. These values appear in browser JavaScript by design. Never create a `VITE_SUPABASE_SERVICE_ROLE_KEY`; any variable prefixed for the frontend is public.
 
 ---
 
