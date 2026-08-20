@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabaseClient';
 import type { Profile } from '../types/database';
 import { AuthContext } from './AuthContext';
 import { humanizeAuthError, isRetryableAuthError } from '../lib/authErrors';
+import { withAbortTimeout } from '../lib/rpcTimeout';
 
 // A transient PostgREST/Supabase hiccup (e.g. PGRST002 "Could not query the
 // database for the schema cache") should not permanently strand a user on an
@@ -52,11 +53,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const isStale = () => generation !== loadProfileGenerationRef.current;
 
     for (let attempt = 0; attempt <= PROFILE_LOAD_RETRY_DELAYS_MS.length; attempt += 1) {
-      const { data, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
+      // Bounded and cancellable: an abandoned request that keeps running can
+      // leave PostgREST holding a pooled connection mid-transaction (see
+      // withAbortTimeout), and a starved pool is what takes the whole REST
+      // layer down while the database itself stays healthy.
+      const { data, error: profileError } = await withAbortTimeout((signal) =>
+        supabase.from('profiles').select('*').eq('id', userId).abortSignal(signal).single(),
+      ).catch((err: unknown) => ({
+        data: null,
+        error: { message: err instanceof Error ? err.message : 'Request failed' },
+      }));
 
       if (isStale()) return; // a newer call (e.g. sign-out, re-sign-in) superseded this one
 

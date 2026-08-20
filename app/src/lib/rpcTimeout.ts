@@ -41,3 +41,47 @@ export function withTimeout<T>(promise: PromiseLike<T>, ms: number = RPC_TIMEOUT
     );
   });
 }
+
+/**
+ * Like withTimeout, but it ACTUALLY CANCELS the request when the timeout wins.
+ *
+ * withTimeout alone only abandons the promise: the underlying fetch keeps
+ * running, so the server never learns the caller gave up. For a Supabase RPC
+ * that means PostgREST can be left mid-transaction on a pooled connection.
+ * Session state pulled from the live project showed 6 connections stuck in
+ * `idle in transaction (aborted)` and 2 more in `idle in transaction`, all of
+ * them PostgREST RPC calls — 8 of 16 slots held by transactions nobody was
+ * waiting for any more. Once the pool is starved, PostgREST cannot get a
+ * connection to load its schema cache, so every REST request returns
+ * PGRST002/PGRST003 while the database itself stays perfectly healthy (which
+ * is exactly what the project dashboard reported).
+ *
+ * Passing the signal into `.abortSignal()` makes the client close the HTTP
+ * request on timeout, so PostgREST sees the disconnect and can release the
+ * connection instead of stranding it.
+ *
+ * @param build receives the signal and must attach it, e.g.
+ *   `withAbortTimeout((signal) => supabase.rpc('f', args).abortSignal(signal))`
+ */
+export function withAbortTimeout<T>(
+  build: (signal: AbortSignal) => PromiseLike<T>,
+  ms: number = RPC_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new RpcTimeoutError(ms));
+    }, ms);
+    Promise.resolve(build(controller.signal)).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
