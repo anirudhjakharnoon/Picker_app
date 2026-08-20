@@ -1,5 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import { isRpcTimeout, RpcTimeoutError, withTimeout } from './rpcTimeout';
+import { isRpcTimeout, RpcTimeoutError, withAbortTimeout, withTimeout } from './rpcTimeout';
+
+describe('withAbortTimeout', () => {
+  it('aborts the signal when the timeout wins, so the request is really cancelled', async () => {
+    // The whole point: withTimeout alone abandons the promise but leaves the
+    // fetch running, which can strand a PostgREST transaction on a pooled
+    // connection. Live session state showed 8 of 16 connections held that way.
+    let seen: AbortSignal | undefined;
+    const pending = withAbortTimeout((signal) => {
+      seen = signal;
+      return new Promise<string>(() => {}); // never settles
+    }, 10);
+
+    await expect(pending).rejects.toBeInstanceOf(RpcTimeoutError);
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('does not abort when the request wins the race', async () => {
+    let seen: AbortSignal | undefined;
+    const value = await withAbortTimeout((signal) => {
+      seen = signal;
+      return Promise.resolve('ok');
+    }, 1000);
+
+    expect(value).toBe('ok');
+    expect(seen?.aborted).toBe(false);
+  });
+});
 
 describe('withTimeout', () => {
   it('resolves when the promise settles first', async () => {

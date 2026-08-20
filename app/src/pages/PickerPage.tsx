@@ -16,7 +16,7 @@ import { orderStatusMeta } from '../lib/status';
 import { useToast, type Toast, type ToastVariant } from '../lib/useToast';
 import { friendlyScanError, wallLabel } from '../lib/scanErrors';
 import { alertNewOrder, primeAudio, requestNotificationPermission } from '../lib/alerts';
-import { withTimeout } from '../lib/rpcTimeout';
+import { withAbortTimeout } from '../lib/rpcTimeout';
 
 type Screen =
   | { name: 'queue' }
@@ -1396,8 +1396,8 @@ function ChooseHoleAndDropFlow({
   const claimHole = async (value: string) => {
     try {
       // No order id: the hole is just held; the bag will decide the order.
-      const { data, error } = await withTimeout(
-        supabase.rpc('claim_pigeon_hole_v1', { p_hole_qr_value: value }),
+      const { data, error } = await withAbortTimeout((signal) =>
+        supabase.rpc('claim_pigeon_hole_v1', { p_hole_qr_value: value }).abortSignal(signal),
       );
       if (error) {
         notify(friendlyScanError('claim-hole', error.message), 'error');
@@ -1452,8 +1452,8 @@ function ChooseHoleAndDropFlow({
     // what this pre-check concludes, so a stale/bypassed client check cannot
     // misplace a bag.
     try {
-      const { data: resolved, error: resolveError } = await withTimeout(
-        supabase.rpc('resolve_bag_qr_v1', { p_bag_qr_value: value }),
+      const { data: resolved, error: resolveError } = await withAbortTimeout((signal) =>
+        supabase.rpc('resolve_bag_qr_v1', { p_bag_qr_value: value }).abortSignal(signal),
       );
       if (!resolveError) {
         const rows = (resolved as { delivery_mode: DeliveryMode | null }[] | null) ?? [];

@@ -12,7 +12,8 @@ const { single, getSession, onAuthStateChange, authCallbacks } = vi.hoisted(() =
 
 vi.mock('../lib/supabaseClient', () => ({
   supabase: {
-    from: () => ({ select: () => ({ eq: () => ({ single }) }) }),
+    // Mirrors the real chain: .from().select().eq().abortSignal().single()
+    from: () => ({ select: () => ({ eq: () => ({ abortSignal: () => ({ single }) }) }) }),
     rpc: vi.fn(),
     auth: {
       getSession,

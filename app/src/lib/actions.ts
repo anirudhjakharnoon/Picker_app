@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { isRpcTimeout, withTimeout } from './rpcTimeout';
+import { isRpcTimeout, withAbortTimeout } from './rpcTimeout';
 
 export type ActionType =
   | 'accept_order'
@@ -52,7 +52,9 @@ export async function submitAction(
   // first attempt and never retried.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const { data, error } = await withTimeout(supabase.rpc(rpc, payload));
+      const { data, error } = await withAbortTimeout((signal) =>
+        supabase.rpc(rpc, payload).abortSignal(signal),
+      );
       if (error) return { localId, ok: false, error: error.message };
       return { localId, ok: true, data };
     } catch (err) {

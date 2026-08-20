@@ -7,13 +7,26 @@ vi.mock('./supabaseClient', () => ({
 
 import { submitAction } from './actions';
 
+/**
+ * submitAction now calls `supabase.rpc(...).abortSignal(signal)` so a timed-out
+ * request is genuinely cancelled rather than left running (an abandoned request
+ * can strand a PostgREST transaction on a pooled connection). These helpers
+ * shape the mock like that real chain.
+ */
+function resolving(value: unknown) {
+  return { abortSignal: () => Promise.resolve(value) };
+}
+function neverSettling() {
+  return { abortSignal: () => new Promise(() => {}) };
+}
+
 describe('online-only action submission', () => {
   beforeEach(() => {
     rpc.mockReset();
   });
 
   it('calls the scan RPC directly and preserves a generated idempotency id', async () => {
-    rpc.mockResolvedValueOnce({ data: { scanned: 1 }, error: null });
+    rpc.mockReturnValueOnce(resolving({ data: { scanned: 1 }, error: null }));
     const result = await submitAction('scan_bag_pickup', (eventId) => ({
       p_client_event_id: eventId,
       p_order_id: 'order-1',
@@ -28,7 +41,7 @@ describe('online-only action submission', () => {
   });
 
   it('returns an actionable server error rather than queueing offline work', async () => {
-    rpc.mockResolvedValueOnce({ data: null, error: { message: 'network unavailable' } });
+    rpc.mockReturnValueOnce(resolving({ data: null, error: { message: 'network unavailable' } }));
     await expect(submitAction('accept_order', () => ({ p_order_id: 'order-1' }))).resolves.toMatchObject({
       ok: false,
       error: 'network unavailable',
@@ -40,10 +53,12 @@ describe('online-only action submission', () => {
     // normal { error } response, not a thrown rejection - only a client-side
     // timeout throws. A validation error like a wall mismatch must return
     // immediately: retrying it would just repeat the same rejected write.
-    rpc.mockResolvedValueOnce({
-      data: null,
-      error: { message: 'This hole is on the Hyperlocal wall. Use a LMS hole for this shipment.' },
-    });
+    rpc.mockReturnValueOnce(
+      resolving({
+        data: null,
+        error: { message: 'This hole is on the Hyperlocal wall. Use a LMS hole for this shipment.' },
+      }),
+    );
     const result = await submitAction('scan_bag_into_held_hole', (eventId) => ({ p_client_event_id: eventId }));
     expect(result.ok).toBe(false);
     expect(rpc).toHaveBeenCalledTimes(1);
@@ -60,8 +75,8 @@ describe('online-only action submission', () => {
     vi.useFakeTimers();
     try {
       rpc
-        .mockImplementationOnce(() => new Promise(() => {})) // never settles
-        .mockResolvedValueOnce({ data: { dropped: 1 }, error: null });
+        .mockImplementationOnce(() => neverSettling()) // never settles: timeout wins
+        .mockReturnValueOnce(resolving({ data: { dropped: 1 }, error: null }));
 
       const resultPromise = submitAction('scan_bag_into_held_hole', (eventId) => ({
         p_client_event_id: eventId,
