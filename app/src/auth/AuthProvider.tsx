@@ -7,8 +7,21 @@ import { humanizeAuthError, isRetryableAuthError } from '../lib/authErrors';
 
 // A transient PostgREST/Supabase hiccup (e.g. PGRST002 "Could not query the
 // database for the schema cache") should not permanently strand a user on an
-// error screen. Retry a few times with backoff before surfacing anything.
-const PROFILE_LOAD_RETRY_DELAYS_MS = [500, 1500, 3000, 5000];
+// error screen, so one burst of attempts with backoff is worth it.
+//
+// But when the database is genuinely DOWN rather than blipping, retrying is
+// actively harmful: it cannot succeed, it burns request quota, and it keeps
+// load on an instance that needs headroom to recover. An earlier version of
+// this file had a burst but no limit ACROSS bursts, and every auth event
+// (token refresh, tab focus, re-mount) started a fresh one. Against a project
+// returning 503s that produced a sustained ~5-6 requests/second for the same
+// profile row - over a million failed requests in under an hour.
+//
+// So: short burst, then a hard stop. After MAX_CONSECUTIVE_FAILED_BURSTS the
+// breaker opens and NOTHING retries automatically again until the user asks,
+// via the Try again button on BackendUnavailablePage.
+const PROFILE_LOAD_RETRY_DELAYS_MS = [800, 2500];
+const MAX_CONSECUTIVE_FAILED_BURSTS = 2;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,9 +33,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [autoRetryPaused, setAutoRetryPaused] = useState(false);
   const loadProfileGenerationRef = useRef(0);
+  // Single-flight: concurrent callers share one in-flight load instead of each
+  // starting their own burst. Without this, several auth events arriving inside
+  // one round-trip each added a parallel burst.
+  const inFlightRef = useRef<Promise<void> | null>(null);
+  const consecutiveFailedBurstsRef = useRef(0);
+  // Mirrored as a ref so loadProfile can read the breaker WITHOUT taking
+  // `autoRetryPaused` as a dependency. If it did, loadProfile's identity would
+  // change whenever the breaker flipped, which would re-run the effect below -
+  // re-subscribing onAuthStateChange and re-calling getSession each time. That
+  // is its own retry loop, and exactly the class of bug this file is fixing.
+  const autoRetryPausedRef = useRef(false);
 
-  const loadProfile = useCallback(async (userId: string) => {
+  const runProfileLoad = useCallback(async (userId: string) => {
     const generation = ++loadProfileGenerationRef.current;
     const isStale = () => generation !== loadProfileGenerationRef.current;
 
@@ -36,17 +61,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (isStale()) return; // a newer call (e.g. sign-out, re-sign-in) superseded this one
 
       if (!profileError) {
+        consecutiveFailedBurstsRef.current = 0;
+        autoRetryPausedRef.current = false;
         setProfile(data as unknown as Profile);
         setError(null);
         setRetrying(false);
+        setAutoRetryPaused(false);
         return;
       }
 
       const attemptsRemaining = attempt < PROFILE_LOAD_RETRY_DELAYS_MS.length;
       if (!isRetryableAuthError(profileError.message) || !attemptsRemaining) {
+        // This burst failed. Count it, and once enough have failed in a row,
+        // stop retrying on our own initiative entirely.
+        consecutiveFailedBurstsRef.current += 1;
+        const paused = consecutiveFailedBurstsRef.current >= MAX_CONSECUTIVE_FAILED_BURSTS;
+        autoRetryPausedRef.current = paused;
         setError(humanizeAuthError(profileError.message));
         setProfile(null);
         setRetrying(false);
+        setAutoRetryPaused(paused);
         return;
       }
 
@@ -55,6 +89,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (isStale()) return;
     }
   }, []);
+
+  /**
+   * @param force set by the user's explicit "Try again" - resets the breaker.
+   *   Automatic callers (initial load, auth events) pass nothing and are
+   *   refused once the breaker is open.
+   */
+  const loadProfile = useCallback(
+    async (userId: string, force = false): Promise<void> => {
+      if (force) {
+        consecutiveFailedBurstsRef.current = 0;
+        autoRetryPausedRef.current = false;
+        setAutoRetryPaused(false);
+      } else if (autoRetryPausedRef.current) {
+        return; // breaker open: only a manual retry gets through
+      }
+
+      if (inFlightRef.current) return inFlightRef.current;
+
+      const run = runProfileLoad(userId).finally(() => {
+        inFlightRef.current = null;
+      });
+      inFlightRef.current = run;
+      return run;
+    },
+    [runProfileLoad],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -105,9 +165,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
   }, []);
 
+  // Always forces: this is only reached from a deliberate user action (the Try
+  // again button, or a post-write reconcile), so it resets the breaker.
   const refreshProfile = useCallback(async () => {
     if (session) {
-      await loadProfile(session.user.id);
+      await loadProfile(session.user.id, true);
     }
   }, [session, loadProfile]);
 
@@ -123,6 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         error,
         retrying,
+        autoRetryPaused,
         signInWithPassword,
         signOut,
         refreshProfile,

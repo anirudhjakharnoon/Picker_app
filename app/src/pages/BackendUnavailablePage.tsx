@@ -13,7 +13,7 @@ import { useAuth } from '../auth/AuthContext';
  * out of CPU/memory headroom, for example).
  */
 export function BackendUnavailablePage() {
-  const { error, retrying, refreshProfile, signOut } = useAuth();
+  const { error, retrying, autoRetryPaused, refreshProfile, signOut } = useAuth();
   const [manualRetrying, setManualRetrying] = useState(false);
 
   const handleRetry = async () => {
@@ -39,7 +39,12 @@ export function BackendUnavailablePage() {
         <p className="auth-subtitle">
           {retrying && !manualRetrying
             ? 'Still trying to reach the server…'
-            : 'This usually clears on its own. Try again in a moment, and tell your administrator if it keeps happening.'}
+            : autoRetryPaused
+              ? // Say plainly that nothing is happening in the background. Retrying
+                // on a loop against a server that is down cannot fix it and only
+                // adds load, so the next attempt is deliberately the picker's call.
+                'Automatic retries have stopped so the server is not overloaded. Tap Try again when you are ready, and tell your administrator if it keeps happening.'
+              : 'This usually clears on its own. Try again in a moment, and tell your administrator if it keeps happening.'}
         </p>
         <button type="button" onClick={() => void handleRetry()} disabled={manualRetrying}>
           {manualRetrying ? 'Trying again…' : 'Try again'}

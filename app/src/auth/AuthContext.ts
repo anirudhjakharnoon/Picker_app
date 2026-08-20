@@ -13,6 +13,14 @@ export interface AuthContextValue {
    * "still trying to connect" hint instead of a dead-end error message.
    */
   retrying: boolean;
+  /**
+   * True once automatic profile-load retries have been given up on, after
+   * repeated failures. Nothing will retry again without a deliberate user
+   * action (`refreshProfile`), which is what stops a down database from being
+   * hammered by every open tab. The UI should say so rather than implying it
+   * is still trying.
+   */
+  autoRetryPaused: boolean;
   signInWithPassword: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
