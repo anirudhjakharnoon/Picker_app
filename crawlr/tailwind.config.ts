@@ -6,13 +6,13 @@ const config: Config = {
     extend: {
       colors: {
         void: {
-          950: "#02040a",
-          900: "#050810",
-          800: "#0a0f1c",
-          700: "#101828",
+          950: "#04070a",
+          900: "#07100b",
+          800: "#0b1712",
+          700: "#122019",
         },
         signal: {
-          green: "#39ff88",
+          green: "#5cff9d",
           cyan: "#22e8ff",
           amber: "#ffb020",
           red: "#ff3b5c",
@@ -28,10 +28,10 @@ const config: Config = {
           "Menlo",
           "monospace",
         ],
-        display: ["Chakra Petch", "Rajdhani", "Inter", "sans-serif"],
+        display: ["Space Grotesk", "Inter", "sans-serif"],
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(57,255,136,0.25), 0 0 24px -4px rgba(57,255,136,0.45)",
+        glow: "0 0 0 1px rgba(92,255,157,0.25), 0 0 24px -4px rgba(92,255,157,0.45)",
         "glow-cyan": "0 0 0 1px rgba(34,232,255,0.25), 0 0 24px -4px rgba(34,232,255,0.45)",
         "glow-red": "0 0 0 1px rgba(255,59,92,0.3), 0 0 24px -4px rgba(255,59,92,0.5)",
       },

@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(92, 255, 157, 0.35) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(92, 255, 157, 0.3);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html,
+body {
+  background: #04070a;
+  color: #d7ffe9;
+}
+
+::selection {
+  background: rgba(92, 255, 157, 0.35);
+  color: #04070a;
+}
+
+.bg-crt-grid {
+  background-image: linear-gradient(rgba(92, 255, 157, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(92, 255, 157, 0.06) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+.bg-vignette {
+  background: radial-gradient(ellipse at center, transparent 0%, rgba(2, 4, 8, 0.75) 100%);
+}
+
+.text-glow {
+  text-shadow: 0 0 10px rgba(92, 255, 157, 0.55);
+}
+
+/* Ambient, purely-decorative animation layer: scanline sweep + drifting
+   particles. Frozen entirely under prefers-reduced-motion, per the
+   accessibility requirement - live data updates are untouched by this. */
+.ambient-layer {
+  animation-play-state: running;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-layer,
+  .ambient-layer * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

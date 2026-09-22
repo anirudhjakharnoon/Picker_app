@@ -3,14 +3,14 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { runTick } from "@/lib/crawlEngine";
 import { isAuthorizedInternalRequest } from "@/lib/internalAuth";
 import { getSiteUrl } from "@/lib/supabase/env";
-import { TICK_MAX_DURATION_SECONDS } from "@/lib/constants";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Vercel Hobby caps Node serverless functions at 60s; Pro/Enterprise allow
-// more. 60 is the number that works on every plan - see lib/constants.ts
-// for the full rationale (TICK_MAX_DURATION_SECONDS).
-export const maxDuration = TICK_MAX_DURATION_SECONDS;
+// Next.js requires this to be a literal, so it can't reference
+// TICK_MAX_DURATION_SECONDS directly - keep this in sync with that
+// constant in lib/constants.ts. Vercel Hobby caps Node serverless
+// functions at 60s; Pro/Enterprise allow more, but 60 works on every plan.
+export const maxDuration = 60;
 
 export async function POST(request: Request, { params }: { params: { id: string } }): Promise<Response> {
   if (!isAuthorizedInternalRequest(request)) {
