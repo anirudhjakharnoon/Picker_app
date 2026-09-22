@@ -98,7 +98,12 @@ export async function runTick(
   }
 
   const rps = clampRatePerSecond(job.rate_limit_rps);
-  const bucket = getDomainRateLimiter(`${job.id}`, rps);
+  // Keyed by root_domain (not job id) so two concurrent jobs that happen to
+  // target the same domain share one bucket instead of jointly exceeding
+  // its intended rate - true per-domain politeness, not just per-job. The
+  // trade-off: whichever job's tick creates the bucket first "wins" that
+  // domain's effective rps for as long as this process stays warm.
+  const bucket = getDomainRateLimiter(job.root_domain, rps);
   const maxDepth = Math.min(job.max_depth, MAX_DEPTH_HARD_CAP);
   const maxPages = Math.min(job.max_pages, MAX_PAGES_HARD_CAP);
 
