@@ -101,6 +101,17 @@ export type JobQuotaResult = {
   retry_after_seconds: number;
 };
 
+export type BumpJobCountersArgs = {
+  p_job_id: string;
+  p_pages_crawled?: number;
+  p_pages_skipped?: number;
+  p_pages_errored?: number;
+  p_images_found?: number;
+  p_videos_found?: number;
+  p_text_bytes?: number;
+  p_robots_disallowed?: number;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -154,6 +165,10 @@ export type Database = {
       try_consume_job_quota: {
         Args: { p_owner: string; p_max_jobs?: number; p_window_seconds?: number };
         Returns: JobQuotaResult[];
+      };
+      bump_job_counters: {
+        Args: BumpJobCountersArgs;
+        Returns: undefined;
       };
     };
     Enums: Record<string, never>;

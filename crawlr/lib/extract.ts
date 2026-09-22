@@ -330,7 +330,13 @@ export function extractAssets(html: string, url: string): ExtractedAssets {
 
 const TRACKING_PARAM_PATTERN = /^(utm_[a-z_]+|gclid|fbclid|msclkid|mc_[a-z]+|igshid|_ga|yclid|vero_id|mkt_tok|ref|ref_src|icid|cmpid)$/i;
 
-function normalizeLink(rawUrl: string): string | null {
+/**
+ * Normalizes an absolute http(s) URL: strips the fragment and known
+ * tracking query params, sorts the remaining params, and drops a trailing
+ * slash from non-root paths. Used both for link discovery (extractLinks)
+ * and for seeding/deduping crawl_queue.normalized_url.
+ */
+export function normalizeUrl(rawUrl: string): string | null {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -375,7 +381,7 @@ export function extractLinks(html: string, baseUrl: string): string[] {
     if (!href) return;
     const abs = resolveUrl(href, baseUrl);
     if (!abs) return;
-    const normalized = normalizeLink(abs);
+    const normalized = normalizeUrl(abs);
     if (!normalized) return;
     const linkDomain = registrableDomain(normalized);
     if (linkDomain === null || linkDomain !== baseDomain) return;
